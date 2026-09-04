@@ -17,7 +17,17 @@ async function main(): Promise<void> {
   logger.info('Worker starting');
 
   const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 2 });
-  const redisReady = (await redis.ping()) === 'PONG';
+  // Without a listener, ioredis dumps reconnect errors straight to stderr, bypassing
+  // structured logging entirely — route them through the same logger everything else uses.
+  redis.on('error', (error) => logger.error({ err: error }, 'Redis client error'));
+
+  const redisReady = await redis
+    .ping()
+    .then((reply) => reply === 'PONG')
+    .catch((error: Error) => {
+      logger.error({ err: error }, 'Redis connectivity check failed');
+      return false;
+    });
   logger.info({ redisReady }, 'Redis connectivity check');
 
   const dbReady = await prisma
