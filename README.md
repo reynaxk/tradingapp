@@ -134,7 +134,9 @@ their `Dockerfile`s), Neon (Postgres), Upstash (Redis).
 
 ## Full architecture
 
-The complete system design — every layer, the technology choices and why, the full data
-model, the phased roadmap beyond Phase 0, and the security architecture — lives in the
-architecture spec reviewed before this repository was scaffolded. This README stays
-focused on running the code that spec describes.
+The product vision, full data model, phased roadmap beyond Phase 0, and the reasoning
+behind each technology choice were captured in a separate architecture review before this
+repository was scaffolded — it isn't tracked in this repo. What matters for building on
+top of Phase 0 *is* checked in: the load-bearing principles live in [`docs/`](./docs)
+(source-of-truth rules, wallet security, chain-adapter boundaries), and each phase's scope
+is enforced in code as it's built, not just described in a document elsewhere.
