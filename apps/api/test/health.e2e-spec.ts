@@ -3,6 +3,7 @@ import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { createTestApp } from './test-app';
 
 /**
  * Requires a reachable Postgres (DATABASE_URL) and Redis (REDIS_URL) — run
@@ -17,8 +18,7 @@ describe('Health (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleRef.createNestApplication();
-    await app.init();
+    app = await createTestApp(moduleRef);
   });
 
   afterAll(async () => {

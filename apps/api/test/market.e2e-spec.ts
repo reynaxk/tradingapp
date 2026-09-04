@@ -1,10 +1,10 @@
-import type { INestApplication} from '@nestjs/common';
-import { ValidationPipe } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
 import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
 import { prisma } from '@fomo/db';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { createTestApp } from './test-app';
 
 /**
  * Requires a reachable Postgres (DATABASE_URL) and Redis (REDIS_URL) — same as
@@ -28,13 +28,7 @@ describe('Market (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleRef.createNestApplication();
-    // Mirrors main.ts's bootstrap — the e2e test module doesn't go through main.ts, so
-    // this has to be applied explicitly or DTO validation silently never runs.
-    app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true, transformOptions: { enableImplicitConversion: true } }),
-    );
-    await app.init();
+    app = await createTestApp(moduleRef);
 
     const chain = await prisma.chain.upsert({
       where: { identifier: chainIdentifier },
