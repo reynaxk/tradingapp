@@ -1,5 +1,7 @@
 # indexer/
 
-Empty in Phase 0. This is where the near-real-time and reconciliation lanes described in
-`/docs/SOURCE_OF_TRUTH.md` land in Phase 1 — one `ChainDataProvider`-backed listener per
-chain, normalizing chain events into idempotent upserts against `@fomo/db`.
+Phase 1's actual indexing pipeline lives in `../market/` (`ingestion.ts`) rather than
+here — it's specifically the market-data indexer (Uniswap-V3-style Swap events → prices,
+liquidity, candles), and naming it after the domain it indexes keeps room for this
+directory to hold a differently-shaped indexer later (wallet activity, transactions) that
+wouldn't belong under `market/`. This directory stays empty until that need is real.

@@ -19,6 +19,8 @@ export const EnvSchema = z.object({
   CHAIN_RPC_URL: z.string().url('CHAIN_RPC_URL must be a valid URL'),
 
   HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  /** How often the market ingestion tick (price/liquidity refresh + swap backfill) runs. */
+  MARKET_INGESTION_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
