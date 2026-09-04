@@ -1,8 +1,8 @@
 /**
- * Shared Tailwind preset. Carries the product's design tokens so every app
- * (web today, anything else later) draws from one palette instead of
- * redefining colors locally. Values are provisional — swap them when the
- * product's visual identity is finalized, the token names should not need to change.
+ * Shared Tailwind preset. Carries the product's design tokens so every app (web today,
+ * anything else later) draws from one palette instead of redefining colors locally.
+ * Actual values live in each app's globals.css as CSS custom properties (light in :root,
+ * dark under the prefers-color-scheme override) — this file only names the tokens.
  */
 module.exports = {
   darkMode: 'media',
