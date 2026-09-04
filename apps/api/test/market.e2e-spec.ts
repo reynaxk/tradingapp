@@ -18,7 +18,7 @@ describe('Market (e2e)', () => {
   const chainIdentifier = 'eip155:8453';
   const baseAddress = '0x4200000000000000000000000000000000000006';
   const quoteAddress = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-  const untrackedAddress = '0x0000000000000000000000000000000000dEaD';
+  const untrackedAddress = '0x000000000000000000000000000000000000dEaD'; // well-formed (40 hex chars), just not seeded
   const poolAddress = '0x6c561B446416E1A00E8E93E221854d6eA4171372';
 
   let tokenMarketId: string;
