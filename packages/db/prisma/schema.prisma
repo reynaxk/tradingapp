@@ -1,0 +1,91 @@
+// Phase 0 schema: chains, tokens, token_markets only.
+// See /docs/SOURCE_OF_TRUTH.md before adding a table — every fact needs exactly one
+// authoritative owner, and this file is that owner for the entities defined here.
+
+generator client {
+  provider        = "prisma-client-js"
+  // Default output location (node_modules/.prisma/client, re-exported via the
+  // @prisma/client package) — deliberately not a custom path. A relative `output`
+  // makes the generated client a source file tsc must account for under `rootDir`,
+  // which stops being true the moment it's a normal package import instead.
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // Declared now so `prisma migrate` provisions it, even though Phase 0 has no
+  // hypertables yet — OHLCV candles land on this extension in a later phase.
+  extensions = [timescaledb]
+}
+
+/// A blockchain network the platform knows about. `identifier` is the stable,
+/// human-referenceable id (CAIP-2 style, e.g. "eip155:8453" for Base mainnet); `id` is
+/// the internal numeric key used by foreign keys.
+model Chain {
+  id           Int      @id @default(autoincrement())
+  identifier   String   @unique
+  name         String
+  nativeSymbol String   @map("native_symbol")
+  /// Logical reference to this chain's RPC configuration (an env var key or provider
+  /// config name) — never a raw RPC URL or API key. Resolved from environment/secrets
+  /// at runtime; intentionally not a real endpoint value in this table.
+  rpcConfigKey String   @map("rpc_config_key")
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tokens       Token[]
+  tokenMarkets TokenMarket[]
+
+  @@map("chains")
+}
+
+/// A token contract on a specific chain. `symbol`, `name`, `decimals`, and `logoUrl` are
+/// nullable on purpose — they are facts about the chain, owned by the indexer, and must
+/// never be fabricated by application code before the indexer has confirmed them.
+model Token {
+  id              String   @id @default(uuid())
+  chainId         Int      @map("chain_id")
+  contractAddress String   @map("contract_address")
+  symbol          String?
+  name            String?
+  decimals        Int?
+  logoUrl         String?  @map("logo_url")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  chain          Chain         @relation(fields: [chainId], references: [id], onDelete: Restrict)
+  marketsAsBase  TokenMarket[] @relation("TokenMarketBaseToken")
+  marketsAsQuote TokenMarket[] @relation("TokenMarketQuoteToken")
+
+  @@unique([chainId, contractAddress])
+  @@index([chainId])
+  @@map("tokens")
+}
+
+/// A specific liquidity venue a token trades on (a pool/pair on a DEX). Price and
+/// liquidity live here, not on Token, because one token can trade across several pools —
+/// and even several chains — at once.
+model TokenMarket {
+  id           String   @id @default(uuid())
+  chainId      Int      @map("chain_id")
+  tokenId      String   @map("token_id")
+  quoteTokenId String   @map("quote_token_id")
+  dex          String?
+  pairAddress  String   @map("pair_address")
+  /// Nullable: unknown until the indexer observes this pool's reserves. Never a guess.
+  liquidityUsd Decimal? @map("liquidity_usd") @db.Decimal(38, 18)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  chain      Chain @relation(fields: [chainId], references: [id], onDelete: Restrict)
+  token      Token @relation("TokenMarketBaseToken", fields: [tokenId], references: [id], onDelete: Restrict)
+  quoteToken Token @relation("TokenMarketQuoteToken", fields: [quoteTokenId], references: [id], onDelete: Restrict)
+
+  @@unique([chainId, pairAddress])
+  @@index([tokenId])
+  @@index([quoteTokenId])
+  @@map("token_markets")
+}

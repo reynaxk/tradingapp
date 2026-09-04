@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens. Values are provisional (see packages/config/tailwind-preset.cjs) — swap
+ * them when the product's visual identity is finalized, the variable names shouldn't need
+ * to change. Light palette lives in :root; dark only overrides the same variables.
+ */
+:root {
+  --fomo-bg: 241 242 245;
+  --fomo-surface: 255 255 255;
+  --fomo-surface-raised: 232 234 239;
+  --fomo-line: 219 222 229;
+  --fomo-ink-900: 20 22 28;
+  --fomo-ink-600: 75 79 90;
+  --fomo-ink-400: 110 114 128;
+  --fomo-accent: 224 105 42;
+  --fomo-up: 28 154 99;
+  --fomo-down: 216 55 90;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fomo-bg: 11 12 16;
+    --fomo-surface: 21 23 30;
+    --fomo-surface-raised: 29 32 40;
+    --fomo-line: 42 45 55;
+    --fomo-ink-900: 237 238 242;
+    --fomo-ink-600: 171 175 187;
+    --fomo-ink-400: 121 126 140;
+    --fomo-accent: 255 153 85;
+    --fomo-up: 53 192 129;
+    --fomo-down: 240 89 111;
+  }
+}
+
+body {
+  background-color: rgb(var(--fomo-bg));
+  color: rgb(var(--fomo-ink-900));
+}

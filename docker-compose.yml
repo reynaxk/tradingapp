@@ -1,0 +1,36 @@
+# Local development only. Production uses managed Postgres (with the Timescale extension)
+# and managed Redis — see /docs/DEPLOYMENT.md.
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fomo
+      POSTGRES_PASSWORD: fomo
+      POSTGRES_DB: fomo
+    ports:
+      - '5432:5432'
+    volumes:
+      - fomo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fomo -d fomo']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - fomo_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  fomo_postgres_data:
+  fomo_redis_data:

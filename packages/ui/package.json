@@ -1,0 +1,29 @@
+{
+  "name": "@fomo/ui",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "echo \"no components with logic worth unit-testing yet\" && exit 0",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0"
+  },
+  "devDependencies": {
+    "@fomo/config": "workspace:*",
+    "@types/react": "^18.3.11",
+    "eslint": "^8.57.1",
+    "react": "^18.3.1",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

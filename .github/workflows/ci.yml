@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: test
+  DATABASE_URL: postgresql://fomo:fomo@localhost:5432/fomo?schema=public
+  REDIS_URL: redis://localhost:6379
+
+jobs:
+  ci:
+    name: Install → Lint → Typecheck → Migrate → Test → Build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: fomo
+          POSTGRES_PASSWORD: fomo
+          POSTGRES_DB: fomo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fomo -d fomo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Validate schema and apply migrations
+        run: |
+          pnpm --filter @fomo/db exec prisma validate
+          pnpm --filter @fomo/db exec prisma migrate deploy
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: API health e2e test (against live Postgres + Redis)
+        run: pnpm --filter @fomo/api test:e2e
+
+      - name: Build
+        run: pnpm build
