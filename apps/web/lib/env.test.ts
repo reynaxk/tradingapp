@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseEnv } from '@fomo/domain';
-import { ServerEnvSchema } from './env';
+import { ClientEnvSchema, ServerEnvSchema } from './env';
 
 describe('web server env schema', () => {
   it('defaults NODE_ENV and API_BASE_URL when unset', () => {
@@ -21,5 +21,15 @@ describe('web server env schema', () => {
   it('accepts a real production API URL', () => {
     const result = parseEnv(ServerEnvSchema, { API_BASE_URL: 'https://api.example.com' });
     expect(result.API_BASE_URL).toBe('https://api.example.com');
+  });
+});
+
+describe('web client env schema', () => {
+  it('defaults NEXT_PUBLIC_API_BASE_URL when unset', () => {
+    expect(parseEnv(ClientEnvSchema, {})).toEqual({ NEXT_PUBLIC_API_BASE_URL: 'http://localhost:4000' });
+  });
+
+  it('rejects a malformed NEXT_PUBLIC_API_BASE_URL rather than silently accepting it', () => {
+    expect(() => parseEnv(ClientEnvSchema, { NEXT_PUBLIC_API_BASE_URL: 'not-a-url' })).toThrow();
   });
 });

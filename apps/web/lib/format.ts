@@ -57,3 +57,21 @@ export function formatDateTime(iso: string): string {
     minute: '2-digit',
   });
 }
+
+/** "8m ago" / "3h ago" / "2d ago" for the activity feed — falls back to the absolute date
+ *  past 7 days, where "N days ago" stops being more useful than the actual date. Takes an
+ *  explicit `now` for deterministic tests; defaults to the real clock at call time. */
+export function formatRelativeTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  const diffSeconds = Math.max(0, Math.round((now.getTime() - then.getTime()) / 1000));
+
+  if (diffSeconds < 5) return 'just now';
+  if (diffSeconds < 60) return `${diffSeconds}s ago`;
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return formatDateTime(iso);
+}

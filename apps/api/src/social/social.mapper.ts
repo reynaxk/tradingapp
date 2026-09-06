@@ -1,4 +1,4 @@
-import type { SocialActivity, TraderProfile, TraderStats } from '@fomo/domain';
+import type { SocialActivity, TopTrader, TraderProfile, TraderStats } from '@fomo/domain';
 import type { Prisma } from '@fomo/db';
 
 export type ActivityRow = Prisma.SwapGetPayload<{
@@ -62,6 +62,16 @@ export function toTraderStats(
     volumeUsd: agg.volumeUsd === null ? 0 : Number(agg.volumeUsd),
     firstSeenAt: wallet.firstSeenAt.toISOString(),
     lastActiveAt: lastActiveAt ? lastActiveAt.toISOString() : null,
+  };
+}
+
+export function toTopTrader(address: string, wallet: WalletRow | undefined, volumeUsd: number, tradeCount: number): TopTrader {
+  return {
+    address,
+    displayName: wallet?.displayName ?? null,
+    avatarUrl: wallet?.avatarUrl ?? null,
+    volumeUsd,
+    tradeCount,
   };
 }
 

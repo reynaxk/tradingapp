@@ -59,3 +59,19 @@ export const TraderProfileSchema = z.object({
   isFollowedByMe: z.boolean().nullable(),
 });
 export type TraderProfile = z.infer<typeof TraderProfileSchema>;
+
+/**
+ * One row of the "Top Traders" ranking — ranked by real, measured 24h volume among traders
+ * clearing a minimum trade-count floor (a single huge trade shouldn't win "most active" any
+ * more than it should win trending — see TrendingService). Deliberately no "smart money" /
+ * "profitable trader" claim: Fomo doesn't track cost basis, so it never labels anyone by
+ * performance it can't compute. See docs/SOCIAL.md#trader-discovery.
+ */
+export const TopTraderSchema = z.object({
+  address: z.string(),
+  displayName: z.string().nullable(),
+  avatarUrl: z.string().nullable(),
+  volumeUsd: z.number(),
+  tradeCount: z.number().int(),
+});
+export type TopTrader = z.infer<typeof TopTraderSchema>;

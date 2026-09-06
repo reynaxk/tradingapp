@@ -9,8 +9,10 @@ import { PriceChart } from '@/components/market/PriceChart';
 import { StaleBadge } from '@/components/market/StaleBadge';
 import { TimeframeTabs } from '@/components/market/TimeframeTabs';
 import { TokenIdentity } from '@/components/market/TokenIdentity';
+import { ActivityFeed } from '@/components/social/ActivityFeed';
 import { formatCompactUsd, formatDateTime, formatPrice, truncateAddress } from '@/lib/format';
 import { fetchToken, fetchTokenHistory } from '@/lib/market-api';
+import { fetchGlobalActivity } from '@/lib/social-api';
 
 export const revalidate = 15;
 
@@ -31,6 +33,7 @@ export default async function TokenDetailPage({
   if (!market) notFound();
 
   const candles = await fetchTokenHistory(params.address, timeframe);
+  const activity = await fetchGlobalActivity({ tokenAddress: params.address, limit: 10 });
 
   return (
     <>
@@ -74,6 +77,19 @@ export default async function TokenDetailPage({
             <TimeframeTabs address={params.address} active={timeframe} />
           </div>
           <PriceChart candles={candles} />
+        </Surface>
+
+        <Surface className="mt-6 p-5">
+          <h2 className="mb-4 font-display text-sm font-semibold text-ink-900">
+            Who&apos;s trading {market.symbol ?? 'this'}
+          </h2>
+          <ActivityFeed
+            initialItems={activity.items}
+            initialCursor={activity.nextCursor}
+            scope={{ type: 'token', address: params.address }}
+            emptyTitle="No activity indexed yet."
+            emptyDetail="Real trades on this market will show up here as they're indexed."
+          />
         </Surface>
 
         <Surface className="mt-6 p-5">

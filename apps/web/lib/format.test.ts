@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { formatCompactUsd, formatDateTime, formatPercent, formatPrice, priceDirection, truncateAddress } from './format';
+import {
+  formatCompactUsd,
+  formatDateTime,
+  formatPercent,
+  formatPrice,
+  formatRelativeTime,
+  priceDirection,
+  truncateAddress,
+} from './format';
 
 describe('formatPrice', () => {
   it('renders an em dash for null rather than $0.00 or NaN', () => {
@@ -65,5 +73,37 @@ describe('formatDateTime', () => {
     // implicit-locale form, which renders differently per server/host (caught by actually
     // running this page — it showed Russian-locale output in one environment).
     expect(formatDateTime('2026-03-05T14:30:00Z')).toMatch(/^Mar 5, 2026/);
+  });
+});
+
+describe('formatRelativeTime', () => {
+  const now = new Date('2026-01-01T12:00:00Z');
+
+  it('renders "just now" for anything under 5 seconds old', () => {
+    expect(formatRelativeTime(new Date(now.getTime() - 2000).toISOString(), now)).toBe('just now');
+  });
+
+  it('renders seconds for under a minute', () => {
+    expect(formatRelativeTime(new Date(now.getTime() - 42_000).toISOString(), now)).toBe('42s ago');
+  });
+
+  it('renders minutes for under an hour', () => {
+    expect(formatRelativeTime(new Date(now.getTime() - 8 * 60_000).toISOString(), now)).toBe('8m ago');
+  });
+
+  it('renders hours for under a day', () => {
+    expect(formatRelativeTime(new Date(now.getTime() - 5 * 60 * 60_000).toISOString(), now)).toBe('5h ago');
+  });
+
+  it('renders days for under a week', () => {
+    expect(formatRelativeTime(new Date(now.getTime() - 3 * 24 * 60 * 60_000).toISOString(), now)).toBe('3d ago');
+  });
+
+  it('falls back to an absolute date past a week', () => {
+    expect(formatRelativeTime(new Date(now.getTime() - 10 * 24 * 60 * 60_000).toISOString(), now)).toMatch(/^Dec 22, 2025/);
+  });
+
+  it('never renders a negative age for a timestamp fractionally ahead of "now" (clock skew)', () => {
+    expect(formatRelativeTime(new Date(now.getTime() + 500).toISOString(), now)).toBe('just now');
   });
 });

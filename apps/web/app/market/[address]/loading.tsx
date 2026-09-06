@@ -15,6 +15,7 @@ export default function TokenLoading() {
         ))}
       </div>
       <Skeleton className="mt-8 h-72 w-full rounded-2xl" />
+      <Skeleton className="mt-6 h-64 w-full rounded-2xl" />
     </div>
   );
 }

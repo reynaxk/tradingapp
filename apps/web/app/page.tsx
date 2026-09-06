@@ -1,11 +1,17 @@
+import { Surface } from '@fomo/ui';
+import Link from 'next/link';
 import { AutoRefresh } from '@/components/market/AutoRefresh';
 import { EmptyState } from '@/components/market/EmptyState';
 import { MarketHeader } from '@/components/market/MarketHeader';
 import { MarketTable } from '@/components/market/MarketTable';
 import { TokenCard } from '@/components/market/TokenCard';
+import { ActivityFeed } from '@/components/social/ActivityFeed';
+import { TopTraders } from '@/components/social/TopTraders';
+import { TraderIdentity } from '@/components/social/TraderIdentity';
 import { fetchDiscoverMarkets } from '@/lib/market-api';
+import { fetchGlobalActivity, fetchTopTraders, fetchTraderSearch, fetchTrending } from '@/lib/social-api';
 
-export const revalidate = 20;
+export const revalidate = 15;
 
 export default async function DiscoverPage({
   searchParams,
@@ -14,10 +20,14 @@ export default async function DiscoverPage({
 }) {
   const search = searchParams.search?.trim() || undefined;
 
-  const [ranked, trending, byVolume] = await Promise.all([
+  const [ranked, movers, byVolume, activity, trending, topTraders, traderResults] = await Promise.all([
     fetchDiscoverMarkets({ sort: 'score', limit: 20, search }),
     fetchDiscoverMarkets({ sort: 'priceChange', limit: 3, search }),
     fetchDiscoverMarkets({ sort: 'volume', limit: 3, search }),
+    fetchGlobalActivity({ limit: 20 }),
+    fetchTrending(6),
+    fetchTopTraders(4),
+    search ? fetchTraderSearch(search, 5) : Promise.resolve([]),
   ]);
 
   return (
@@ -31,8 +41,41 @@ export default async function DiscoverPage({
           </p>
         )}
 
+        {search && traderResults.length > 0 && (
+          <section className="mb-12">
+            <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Traders</h2>
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {traderResults.map((trader) => (
+                <Link key={trader.address} href={`/trader/${trader.address}`} className="block">
+                  <Surface className="p-4 transition-colors hover:border-accent/50 hover:bg-surface-raised">
+                    <TraderIdentity address={trader.address} displayName={trader.displayName} avatarUrl={trader.avatarUrl} />
+                  </Surface>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {!search && (
+          <section className="mb-12">
+            <h1 className="font-display text-2xl font-bold tracking-tight text-ink-900">Live activity</h1>
+            <p className="mt-1 max-w-xl font-body text-sm text-ink-600">
+              Real indexed trades from tracked markets, as they happen. See who&apos;s buying and selling right now.
+            </p>
+            <div className="mt-5">
+              <ActivityFeed
+                initialItems={activity.items}
+                initialCursor={activity.nextCursor}
+                scope={{ type: 'global' }}
+                emptyTitle="No recent activity yet."
+                emptyDetail="Once tracked markets see real swaps, they'll show up here."
+              />
+            </div>
+          </section>
+        )}
+
         <section className="mb-12">
-          <h1 className="font-display text-2xl font-bold tracking-tight text-ink-900">What&apos;s moving</h1>
+          <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">What&apos;s moving</h2>
           <p className="mt-1 max-w-xl font-body text-sm text-ink-600">
             Ranked by the Discovery Score — a transparent mix of volume, momentum, and liquidity. See how it&apos;s
             computed in the token detail page.
@@ -42,15 +85,50 @@ export default async function DiscoverPage({
           </div>
         </section>
 
+        {!search && (
+          <section className="mb-12">
+            <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Trending</h2>
+            <p className="mt-1 font-body text-sm text-ink-600">
+              Ranked by real trading activity — unique traders and trade count, not just volume. See
+              docs/SOCIAL.md#trending.
+            </p>
+            <div className="mt-5">
+              {trending.length === 0 ? (
+                <EmptyState title="Nothing has cleared the trending thresholds yet" />
+              ) : (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {trending.map((item) => (
+                    <TokenCard key={item.market.tokenAddress} market={item.market} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {!search && (
+          <section className="mb-12">
+            <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Top traders</h2>
+            <p className="mt-1 font-body text-sm text-ink-600">Most active by real 24h volume — not a profit claim.</p>
+            <div className="mt-5">
+              {topTraders.length === 0 ? (
+                <EmptyState title="No trader has cleared the activity floor yet" />
+              ) : (
+                <TopTraders traders={topTraders} />
+              )}
+            </div>
+          </section>
+        )}
+
         <section className="mb-12">
-          <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Trending</h2>
+          <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Biggest movers</h2>
           <p className="mt-1 font-body text-sm text-ink-600">Biggest 24h movers among tracked markets.</p>
           <div className="mt-5">
-            {trending.length === 0 ? (
-              <EmptyState title="No trending data yet" />
+            {movers.length === 0 ? (
+              <EmptyState title="No movement data yet" />
             ) : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {trending.map((market) => (
+                {movers.map((market) => (
                   <TokenCard key={market.tokenAddress} market={market} />
                 ))}
               </div>

@@ -97,6 +97,14 @@ export class SocialController {
     return this.trending.getTrending(bounded);
   }
 
+  // Also registered before `traders/:address`, same reasoning as `traders/search` above.
+  @Get('traders/top')
+  getTopTraders(@Query('limit') limit?: string) {
+    const parsed = limit ? Number.parseInt(limit, 10) : 10;
+    const bounded = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 25) : 10;
+    return this.traders.getTopTraders(bounded);
+  }
+
   @UseGuards(OptionalAuthGuard)
   @Get('traders/:address')
   getTraderProfile(@Param() params: AddressParamDto, @CurrentUser() user: SessionUser | null) {

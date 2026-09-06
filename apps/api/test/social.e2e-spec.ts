@@ -283,6 +283,16 @@ describe('Social (e2e)', () => {
     expect(typeof seeded.trendingScore).toBe('number');
   });
 
+  it('GET /v1/social/traders/top ranks the seeded trader by real 24h volume, never claiming profit', async () => {
+    const res = await request(app.getHttpServer()).get('/v1/social/traders/top');
+    expect(res.status).toBe(200);
+    const seeded = res.body.find((t: { address: string }) => t.address === traderAddress);
+    expect(seeded).toBeDefined(); // 3 seeded trades clears the minimum-trade-count floor
+    expect(typeof seeded.volumeUsd).toBe('number');
+    expect(seeded).not.toHaveProperty('pnl');
+    expect(seeded).not.toHaveProperty('roi');
+  });
+
   it('GET /v1/social/traders/search finds the seeded trader by address prefix', async () => {
     const res = await request(app.getHttpServer()).get(`/v1/social/traders/search?q=${traderAddress.slice(0, 10)}`);
     expect(res.status).toBe(200);

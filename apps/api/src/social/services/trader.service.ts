@@ -1,8 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { prisma } from '@fomo/db';
-import { normalizeEvmAddress, type TraderProfile } from '@fomo/domain';
-import { toTraderProfile, toTraderStats, toTraderSummary } from '../social.mapper';
+import { normalizeEvmAddress, type TopTrader, type TraderProfile } from '@fomo/domain';
+import { toTopTrader, toTraderProfile, toTraderStats, toTraderSummary } from '../social.mapper';
 import { FollowService } from './follow.service';
+
+/** A wallet needs at least this many trades in the window to place on "Top Traders" — one
+ *  huge trade shouldn't win "most active" any more than it should win trending (see
+ *  TRENDING_RANKING.minTradeCount24h in packages/domain/src/social.ts for the same idea
+ *  applied to markets instead of traders). */
+const MIN_TRADES_FOR_TOP_TRADERS = 2;
 
 export interface CursorPage<T> {
   items: T[];
@@ -104,6 +110,33 @@ export class TraderService {
     const nextCursor = hasMore && last ? encodeFollowCursor({ createdAt: last.createdAt.toISOString(), id: last.id }) : null;
 
     return { items: page.map((f) => toTraderSummary(f.wallet)), nextCursor };
+  }
+
+  /**
+   * Ranked by real, measured 24h trading volume among wallets clearing the minimum
+   * trade-count floor — "Most Active" / "Highest Volume," never "smart money" or
+   * "profitable" (Fomo has no cost-basis data to back that claim). See
+   * docs/SOCIAL.md#trader-discovery.
+   */
+  async getTopTraders(limit: number): Promise<TopTrader[]> {
+    const since24h = new Date(Date.now() - 24 * 60 * 60_000);
+    const rows = await prisma.$queryRaw<{ trader_address: string; volume_usd: string; trade_count: bigint }[]>`
+      SELECT trader_address, SUM(volume_usd) AS volume_usd, COUNT(*) AS trade_count
+      FROM swaps
+      WHERE trader_address IS NOT NULL AND block_timestamp >= ${since24h}
+      GROUP BY trader_address
+      HAVING COUNT(*) >= ${MIN_TRADES_FOR_TOP_TRADERS}
+      ORDER BY SUM(volume_usd) DESC
+      LIMIT ${limit}
+    `;
+    if (rows.length === 0) return [];
+
+    const wallets = await prisma.wallet.findMany({ where: { address: { in: rows.map((r) => r.trader_address) } } });
+    const walletByAddress = new Map(wallets.map((w) => [w.address, w]));
+
+    return rows.map((r) =>
+      toTopTrader(r.trader_address, walletByAddress.get(r.trader_address), Number(r.volume_usd), Number(r.trade_count)),
+    );
   }
 
   /** Address-prefix or display-name search — server-backed, indexed, bounded. See
