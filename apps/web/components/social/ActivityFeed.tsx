@@ -38,7 +38,7 @@ function fetchScopedPage(scope: ActivityScope, cursor: string | undefined): Prom
 }
 
 /**
- * The live activity feed — see docs/SOCIAL.md#realtime and #live-activity-visual-effect.
+ * The live activity feed — see docs/SOCIAL.md#realtime.
  * New activity never auto-inserts itself above whatever the viewer is currently reading:
  * it surfaces as a "N new" pill, and only lands in the list once they click it. The
  * realtime connection's honest state (connecting/live/reconnecting) is always visible,

@@ -93,9 +93,9 @@ acquired), so any of those numbers would be fabricated. This is the same non-fab
 principle Phase 1 applies to `priceChange24hPct`/`volume24hUsd` (null, not a guess, until
 the data genuinely supports it) — see `docs/SOURCE_OF_TRUTH.md`.
 
-### Trader discovery ("Top Traders")
+### Trader discovery
 
-`TraderService#getTopTraders` ranks wallets by real, measured 24h trading volume
+`TraderService#getTopTraders` ("Top Traders" in the UI) ranks wallets by real, measured 24h trading volume
 (`SUM(volume_usd)` over `swaps`, grouped by `trader_address`), gated by a minimum trade
 count (`MIN_TRADES_FOR_TOP_TRADERS = 2`) so a single large trade can't win "most active."
 Labeled **"Most Active" / "Highest Volume,"** never "smart money" or "profitable trader" —
@@ -246,15 +246,25 @@ session — see Authentication), and shows an honest "you're not following anyon
 for a visitor with no session at all, rather than silently minting one just because they
 clicked the tab.
 
-## Social signals (likes)
+## Social signals
 
-`ActivityLike` (`userId`, `swapId`) is the full extent of Phase 2's engagement surface —
+`ActivityLike` (`userId`, `swapId`, likes) is the full extent of Phase 2's engagement surface —
 comments, reposts, and bookmarks are explicitly deferred (see "Deferred to later phases").
 Same idempotent-on-duplicate pattern as `Follow` (`@@unique([userId, swapId])` + graceful
 `P2002` handling). Like counts and "did I like this" are **batched per feed page** —
 `ActivityService#batchLikeState` issues one `groupBy` (counts) and one `findMany`
 ("liked by me" set) for the whole page, never a per-item query — so a 20-item feed page is
 always 2 extra queries, not 40.
+
+## Search
+
+`GET /social/traders/search?q=&limit=` (`TraderService#search`) extends Phase 1's
+token/pair search to traders — server-backed and indexed, never a client-side scan of
+loaded data. It matches on an address prefix/substring or `displayName` (case-insensitive),
+returning the same minimal `{ address, displayName, avatarUrl }` shape as follow/following
+lists — no stats, so a page of search results is one bounded query, not N. On the web, the
+Discover page's existing search form (`SearchBar`, unchanged) now also renders a "Traders"
+section alongside token results when a query matches at least one tracked trader.
 
 ## API
 
@@ -307,7 +317,9 @@ into "look up the trader literally named 'search'," so if you add another litera
   `redact` config (`app.module.ts`) already covers the `authorization` header; nothing in
   Phase 2 logs a raw JWT or session id.
 
-## Error / empty / stale states
+## Error states
+
+Covers loading, empty, error, and stale/reconnecting states.
 
 - **Loading**: `ActivityFeedTabs`'s Following tab and `FollowButton`'s pending state use
   `Skeleton` placeholders, matching Phase 1's existing loading convention (never a blank

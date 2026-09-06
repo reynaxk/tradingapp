@@ -7,7 +7,8 @@ import { TraderIdentity } from './TraderIdentity';
 
 /**
  * The one reusable activity card — the feed, a trader's activity tab, and a token's
- * "who's trading this" section all render the same component. See docs/SOCIAL.md#feed-ui.
+ * "who's trading this" section all render the same component. See
+ * docs/SOCIAL.md#activity-model.
  */
 export function ActivityCard({ activity }: { activity: SocialActivity }) {
   const isBuy = activity.action === 'BUY';
