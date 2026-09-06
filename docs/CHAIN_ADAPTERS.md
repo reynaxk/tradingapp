@@ -20,6 +20,15 @@ chain's SDK directly. `EvmChainDataProvider` (`packages/chain-adapters/src/evm-a
 is the only implementation today, built on `viem`. A Solana adapter later implements the
 same interface on top of `@solana/web3.js` — the rest of the application doesn't change.
 
+Phase 1 adds a second, narrower reader alongside it: `UniswapV3PoolReader`
+(`uniswap-v3.ts`) — pool state, token balances/supply, and Swap event logs, for the one DEX
+protocol Phase 1 tracks. It isn't part of the `ChainDataProvider` interface (a pool reader
+is protocol-specific, not chain-generic — an Aerodrome/Solidly-style reader later would be
+a sibling class, not an extension of this one), but it follows the same two rules below.
+The price/liquidity *math* those reads feed into lives separately again, in
+`uniswap-v3-math.ts` — pure functions with no RPC calls, so they're unit-testable without
+a network (see `docs/MARKET_DATA.md#price-methodology`).
+
 ## Rules this package follows
 
 - **It never reads `process.env` itself.** The caller resolves an RPC URL from
@@ -37,8 +46,9 @@ same interface on top of `@solana/web3.js` — the rest of the application doesn
 
 ## Where it's used today
 
-`apps/workers/src/main.ts` constructs one `EvmChainDataProvider` from `CHAIN_*`
-environment variables at boot and logs whether its RPC is reachable — proving the wiring
-works end to end without implementing any indexing logic yet. The real indexer (Phase 1)
-and, later, a `SwapProvider`-style interface for trade routing (Phase 3) build on this same
-seam.
+`apps/workers/src/main.ts` still constructs one `EvmChainDataProvider` at boot to prove
+connectivity. The real work is in `apps/workers/src/market/ingestion.ts`
+(`MarketIngestionService`), which uses both `EvmChainDataProvider` (token metadata) and
+`UniswapV3PoolReader` (pool state, balances, Swap events) to run Phase 1's actual indexing
+pipeline — see `docs/MARKET_DATA.md`. A `SwapProvider`-style interface for trade routing
+(Phase 3) will build on this same seam next.

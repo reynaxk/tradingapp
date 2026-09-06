@@ -68,6 +68,12 @@ model Token {
 /// A specific liquidity venue a token trades on (a pool/pair on a DEX). Price and
 /// liquidity live here, not on Token, because one token can trade across several pools —
 /// and even several chains — at once.
+///
+/// `priceUsd`/`liquidityUsd`/`volume24hUsd`/`priceChange24hPct`/`marketCapUsd` are a
+/// current-state cache — the authoritative history lives in `Swap` and `Candle`. These
+/// fields are refreshed by the ingestion worker every tick and are rebuildable from that
+/// history at any time; nothing should ever write to them by any other path. See
+/// /docs/SOURCE_OF_TRUTH.md and /docs/MARKET_DATA.md.
 model TokenMarket {
   id           String   @id @default(uuid())
   chainId      Int      @map("chain_id")
@@ -75,17 +81,111 @@ model TokenMarket {
   quoteTokenId String   @map("quote_token_id")
   dex          String?
   pairAddress  String   @map("pair_address")
+  /// Uniswap-V3-style fee tier in hundredths of a bip (500 = 0.05%, 3000 = 0.3%, ...).
+  /// Read from the pool contract, not chosen by us.
+  feeTier      Int?     @map("fee_tier")
+
   /// Nullable: unknown until the indexer observes this pool's reserves. Never a guess.
   liquidityUsd Decimal? @map("liquidity_usd") @db.Decimal(38, 18)
+  /// Current price of `token` in USD, derived from the pool's own state. Null, never
+  /// invented, when it can't be honestly computed (e.g. quote-token price unresolved).
+  priceUsd         Decimal? @map("price_usd") @db.Decimal(38, 18)
+  /// Rolling 24h volume, summed from indexed `Swap` rows — not borrowed from a
+  /// third party. Null (not zero) until at least one swap has been indexed.
+  volume24hUsd     Decimal? @map("volume_24h_usd") @db.Decimal(38, 18)
+  /// Percent change vs. the earliest indexed price at least 24h old. Null — not 0% —
+  /// when fewer than 24h of indexed history exist yet; see docs/MARKET_DATA.md.
+  priceChange24hPct Decimal? @map("price_change_24h_pct") @db.Decimal(12, 4)
+  /// price * on-chain total supply (FDV-style). Null when total supply can't be read.
+  /// Documented caveat: this is fully-diluted, not "circulating" — see docs/MARKET_DATA.md.
+  marketCapUsd     Decimal? @map("market_cap_usd") @db.Decimal(38, 2)
+  /// When the price/liquidity snapshot above was last refreshed — the basis for the
+  /// "stale" UI state; never inferred from `updatedAt` alone.
+  lastPriceUpdateAt DateTime? @map("last_price_update_at")
+
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   chain      Chain @relation(fields: [chainId], references: [id], onDelete: Restrict)
   token      Token @relation("TokenMarketBaseToken", fields: [tokenId], references: [id], onDelete: Restrict)
   quoteToken Token @relation("TokenMarketQuoteToken", fields: [quoteTokenId], references: [id], onDelete: Restrict)
+  swaps      Swap[]
+  candles    Candle[]
+  cursor     IngestionCursor?
 
   @@unique([chainId, pairAddress])
   @@index([tokenId])
   @@index([quoteTokenId])
+  @@index([liquidityUsd])
   @@map("token_markets")
+}
+
+/// One on-chain Swap event, decoded and priced. The authoritative source of truth for
+/// volume and historical price — `TokenMarket`'s cached fields and `Candle` rows are both
+/// rebuildable from this table, never the other way around. Idempotency key matches the
+/// convention in /docs/SOURCE_OF_TRUTH.md: (chain_id, tx_hash, log_index).
+model Swap {
+  id            String   @id @default(uuid())
+  chainId       Int      @map("chain_id")
+  tokenMarketId String   @map("token_market_id")
+  txHash        String   @map("tx_hash")
+  logIndex      Int      @map("log_index")
+  blockNumber   BigInt   @map("block_number")
+  /// The block's own timestamp, not the time we happened to index it.
+  blockTimestamp DateTime @map("block_timestamp")
+
+  /// Raw signed token amounts exactly as the pool reported them (base units, pre-decimals)
+  /// — kept for auditability even though `priceUsd`/`volumeUsd` below are what the rest
+  /// of the app reads.
+  amount0Raw String @map("amount0_raw")
+  amount1Raw String @map("amount1_raw")
+
+  /// Pool price immediately after this swap, and this trade's USD value. Computed by us
+  /// from the swap's own sqrtPriceX96, never fabricated.
+  priceUsd  Decimal @map("price_usd") @db.Decimal(38, 18)
+  volumeUsd Decimal @map("volume_usd") @db.Decimal(38, 18)
+  /// "buy" or "sell" of `token` (the market's base token), derived from amount sign.
+  side      String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+
+  @@unique([chainId, txHash, logIndex])
+  @@index([tokenMarketId, blockTimestamp])
+  @@map("swaps")
+}
+
+/// OHLCV, bucketed at a single raw granularity (see BUCKET_INTERVAL in the ingestion
+/// worker) and stored as a Timescale hypertable. Larger chart timeframes are produced by
+/// aggregating these buckets at query time (`time_bucket` in the history query), not by
+/// pre-materializing every timeframe — see docs/MARKET_DATA.md for why, and the documented
+/// upgrade path to continuous aggregates. Rebuildable from `Swap` at any time.
+model Candle {
+  tokenMarketId String   @map("token_market_id")
+  bucketStart   DateTime @map("bucket_start")
+
+  open      Decimal @db.Decimal(38, 18)
+  high      Decimal @db.Decimal(38, 18)
+  low       Decimal @db.Decimal(38, 18)
+  close     Decimal @db.Decimal(38, 18)
+  volumeUsd Decimal @map("volume_usd") @db.Decimal(38, 18)
+
+  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+
+  @@id([tokenMarketId, bucketStart])
+  @@map("candles")
+}
+
+/// Persistent per-market ingestion progress. The worker never rescans from genesis —
+/// it resumes from here, and a crash mid-chunk just means the same range gets fetched
+/// again next run (idempotent, thanks to `Swap`'s unique constraint above).
+model IngestionCursor {
+  tokenMarketId     String   @id @map("token_market_id")
+  lastProcessedBlock BigInt  @map("last_processed_block")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Cascade)
+
+  @@map("ingestion_cursors")
 }

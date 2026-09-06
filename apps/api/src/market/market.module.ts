@@ -1,9 +1,15 @@
 import { Module } from '@nestjs/common';
+import { MarketController } from './market.controller';
+import { MarketService } from './market.service';
 
 /**
- * Empty on purpose. Owns chains, tokens, token_markets, trending, and token-detail reads
- * starting in Phase 1. The Phase 0 migration already creates its tables; this module is
- * where the read API around them lands.
+ * Read-only market data: chains, tokens, token_markets, and their derived
+ * price/liquidity/volume/candle history. Owns nothing about discovery *ranking inputs* —
+ * those are computed from data the ingestion worker (apps/workers) writes; this module
+ * only ever reads. See docs/MARKET_DATA.md.
  */
-@Module({})
+@Module({
+  controllers: [MarketController],
+  providers: [MarketService],
+})
 export class MarketModule {}
