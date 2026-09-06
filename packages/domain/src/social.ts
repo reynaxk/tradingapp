@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DISCOVERY_RANKING } from './market';
+import { DISCOVERY_RANKING, MarketSummarySchema } from './market';
 
 export const ActivityActionSchema = z.enum(['BUY', 'SELL']);
 export type ActivityAction = z.infer<typeof ActivityActionSchema>;
@@ -124,3 +124,13 @@ export function computeTrendingScore(input: {
     weights.tradeCount * Math.log10(1 + Math.max(0, tradeCount24h))
   );
 }
+
+/** A trending result — the same market data `/market/discover` already serves, plus the
+ *  distinct trending score that ordered it. Never conflated with `discoveryScore`: they're
+ *  different formulas answering different questions (see the comment on
+ *  `computeTrendingScore` above). */
+export const TrendingTokenSchema = z.object({
+  market: MarketSummarySchema,
+  trendingScore: z.number(),
+});
+export type TrendingToken = z.infer<typeof TrendingTokenSchema>;

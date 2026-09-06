@@ -20,6 +20,13 @@ export const EnvSchema = z.object({
 
   THROTTLE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
   THROTTLE_LIMIT: z.coerce.number().int().positive().default(120),
+
+  /**
+   * Signs the anonymous session issued by POST /v1/identity/session — see
+   * docs/SOCIAL.md#authentication for exactly what this session does and doesn't prove.
+   * A missing/weak secret fails loudly at boot, same as every other required var here.
+   */
+  JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

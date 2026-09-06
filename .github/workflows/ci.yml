@@ -13,6 +13,7 @@ env:
   NODE_ENV: test
   DATABASE_URL: postgresql://fomo:fomo@localhost:5432/fomo?schema=public
   REDIS_URL: redis://localhost:6379
+  JWT_SECRET: ci-test-secret-not-for-production-use
 
 jobs:
   ci:
