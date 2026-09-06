@@ -191,6 +191,23 @@ describe('Trading (e2e)', () => {
         .send({ nonce: challenge.body.nonce, signature });
       expect(verify.status).toBe(400);
     });
+
+    it('rate-limits repeated challenge requests', async () => {
+      const { token } = await issueSession();
+      const auth = { Authorization: `Bearer ${token}` };
+      // The controller throttles this route to 10/60s (see identity.controller.ts) —
+      // requesting one more than that in quick succession must eventually 429 rather than
+      // letting a client mint unlimited nonces for an address it doesn't own.
+      const responses = await Promise.all(
+        Array.from({ length: 12 }, (_, i) =>
+          request(app.getHttpServer())
+            .post('/v1/identity/wallet/challenge')
+            .set(auth)
+            .send({ address: `0x${i.toString().padStart(2, '0')}23456789012345678901234567890123456789` }),
+        ),
+      );
+      expect(responses.some((res) => res.status === 429)).toBe(true);
+    });
   });
 
   describe('GET /v1/trade/quote', () => {
