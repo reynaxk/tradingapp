@@ -1,10 +1,12 @@
 import Link from 'next/link';
+import { ConnectWalletButton } from '@/components/wallet/ConnectWalletButton';
 import { SearchBar } from './SearchBar';
 
 /**
  * "Discover" is the one top-level nav destination — trader profiles (`/trader/[address]`)
  * are real as of Phase 2, but reached from activity/search/follows rather than a top-level
- * link, since there's no trader *listing* page to point a nav item at yet.
+ * link, since there's no trader *listing* page to point a nav item at yet. "Trades" (Phase
+ * 3) is the one exception: it's every user's own private history, worth a permanent link.
  */
 export function MarketHeader({ searchValue }: { searchValue?: string }) {
   return (
@@ -19,8 +21,12 @@ export function MarketHeader({ searchValue }: { searchValue?: string }) {
         <span className="rounded-full bg-accent/10 px-2.5 py-1 font-mono text-[0.7rem] uppercase tracking-wide text-accent">
           Discover
         </span>
-        <div className="ml-auto">
+        <Link href="/trades" className="font-mono text-[0.7rem] uppercase tracking-wide text-ink-400 hover:text-ink-900">
+          Trades
+        </Link>
+        <div className="ml-auto flex items-center gap-3">
           <SearchBar defaultValue={searchValue} />
+          <ConnectWalletButton />
         </div>
       </div>
     </header>

@@ -1,6 +1,7 @@
 import type { SocialActivity } from '@fomo/domain';
 import { Surface, cn } from '@fomo/ui';
 import Link from 'next/link';
+import { TradeButton } from '@/components/trading/TradeButton';
 import { formatCompactUsd, formatPrice, formatRelativeTime, truncateAddress } from '@/lib/format';
 import { LikeButton } from './LikeButton';
 import { TraderIdentity } from './TraderIdentity';
@@ -76,7 +77,21 @@ export function ActivityCard({ activity }: { activity: SocialActivity }) {
             {truncateAddress(activity.txHash)}
           </a>
         </div>
-        <LikeButton activityId={activity.id} initialLikes={activity.social.likes} initialLikedByMe={activity.social.likedByMe} />
+        <div className="flex items-center gap-2">
+          {activity.token.decimals !== null && activity.token.quoteDecimals !== null && (
+            <TradeButton
+              label="Trade"
+              variant="ghost"
+              tokenAddress={activity.token.address}
+              tokenSymbol={activity.token.symbol}
+              tokenDecimals={activity.token.decimals}
+              quoteTokenAddress={activity.token.quoteAddress}
+              quoteTokenSymbol={activity.token.quoteSymbol}
+              quoteTokenDecimals={activity.token.quoteDecimals}
+            />
+          )}
+          <LikeButton activityId={activity.id} initialLikes={activity.social.likes} initialLikedByMe={activity.social.likedByMe} />
+        </div>
       </div>
     </Surface>
   );
