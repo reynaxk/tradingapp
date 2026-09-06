@@ -31,6 +31,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@fomo/chain-adapters':
+        specifier: workspace:^
+        version: link:../../packages/chain-adapters
       '@fomo/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -85,6 +88,9 @@ importers:
       rxjs:
         specifier: ^7.8.1
         version: 7.8.2
+      viem:
+        specifier: ^2.21.0
+        version: 2.56.3(typescript@5.9.3)(zod@3.25.76)
       zod:
         specifier: ^3.23.8
         version: 3.25.76

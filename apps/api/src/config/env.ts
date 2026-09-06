@@ -27,6 +27,37 @@ export const EnvSchema = z.object({
    * A missing/weak secret fails loudly at boot, same as every other required var here.
    */
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
+
+  /**
+   * The numeric chain id Phase 3 trades on — must name the same chain
+   * apps/workers/src/config/env.ts's CHAIN_IDENTIFIER (a CAIP-2 string, e.g. "eip155:8453")
+   * already indexes; see docs/TRADING.md#chain-scope. A plain number here (rather than
+   * parsing it back out of a CAIP-2 string) because every trading-provider API and every
+   * wallet library expects a bare EVM chain id, not Fomo's own chain identifier format.
+   */
+  CHAIN_ID: z.coerce.number().int().positive(),
+  /** Used only for on-chain reads Phase 3 needs directly (transaction receipt status) —
+   *  never for building the swap itself, which comes fully formed from the router. */
+  CHAIN_RPC_URL: z.string().url('CHAIN_RPC_URL must be a valid URL'),
+
+  /**
+   * See docs/TRADING.md#provider. Required only once real quotes are needed — validated
+   * here (not left to fail at first use) so a misconfigured deploy is loud at boot, same
+   * as every other required var. There is no keyless/free tier to fall back to; a missing
+   * key means quotes honestly fail rather than falling back to an invented price.
+   */
+  ZEROEX_API_KEY: z.string().min(1, 'ZEROEX_API_KEY is required for real swap quotes'),
+
+  /**
+   * See docs/TRADING.md#fees. A bps integer, never a hardcoded literal scattered through
+   * the codebase — every fee calculation reads this one value.
+   */
+  PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(1000).default(50),
+  /** Where the platform fee lands, collected atomically by the swap transaction itself —
+   *  Fomo's backend never custodies it in between. See docs/TRADING.md#fees. */
+  PLATFORM_FEE_RECIPIENT_ADDRESS: z
+    .string()
+    .regex(/^0x[a-fA-F0-9]{40}$/, 'PLATFORM_FEE_RECIPIENT_ADDRESS must be a valid EVM address'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

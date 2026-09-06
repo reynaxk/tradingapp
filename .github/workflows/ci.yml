@@ -14,6 +14,13 @@ env:
   DATABASE_URL: postgresql://fomo:fomo@localhost:5432/fomo?schema=public
   REDIS_URL: redis://localhost:6379
   JWT_SECRET: ci-test-secret-not-for-production-use
+  CHAIN_ID: 8453
+  CHAIN_RPC_URL: https://mainnet.base.org
+  # Intentionally not a real key — CI never fetches a real live quote (no funded wallet or
+  # paid API key belongs in CI). The e2e suite verifies the resulting 401/403 from 0x is
+  # turned into an honest "quote unavailable" response, not a crash. See docs/TESTING.md.
+  ZEROEX_API_KEY: ci-placeholder-not-a-real-key
+  PLATFORM_FEE_RECIPIENT_ADDRESS: '0x1234567890123456789012345678901234567890'
 
 jobs:
   ci:
