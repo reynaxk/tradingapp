@@ -103,6 +103,13 @@ model TokenMarket {
   /// "stale" UI state; never inferred from `updatedAt` alone.
   lastPriceUpdateAt DateTime? @map("last_price_update_at")
 
+  /// Phase 2 trending inputs, refreshed alongside volume24hUsd every ingestion tick from
+  /// `swaps` — see docs/SOCIAL.md#trending. Same null-vs-zero rule as volume24hUsd: null
+  /// until this market has ever had a swap indexed, 0 (not null) once it has but nothing
+  /// falls in the current 24h window.
+  tradeCount24h    Int? @map("trade_count_24h")
+  uniqueTraders24h Int? @map("unique_traders_24h")
+
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -124,6 +131,10 @@ model TokenMarket {
 /// volume and historical price — `TokenMarket`'s cached fields and `Candle` rows are both
 /// rebuildable from this table, never the other way around. Idempotency key matches the
 /// convention in /docs/SOURCE_OF_TRUTH.md: (chain_id, tx_hash, log_index).
+///
+/// Also the authoritative source for Phase 2's social activity feed — see docs/SOCIAL.md.
+/// A "social activity" item is a read-time projection of a Swap row, never a separate
+/// stored copy (`Swap.id` doubles as the activity's stable id).
 model Swap {
   id            String   @id @default(uuid())
   chainId       Int      @map("chain_id")
@@ -147,12 +158,33 @@ model Swap {
   /// "buy" or "sell" of `token` (the market's base token), derived from amount sign.
   side      String
 
+  /// The Uniswap V3 Swap event's `recipient` — the address that received this swap's
+  /// output tokens. Used as this swap's trader identity (see docs/SOCIAL.md#trader-identity):
+  /// for a direct single-hop swap this is the end user's own wallet, but for a multi-hop
+  /// route it can be an intermediate router/pool contract instead of the ultimate trader —
+  /// a disclosed, deliberate heuristic, not perfect attribution. Nullable because swaps
+  /// indexed before Phase 2 predate wallet capture; every swap indexed from Phase 2 onward
+  /// has this set.
+  traderAddress String? @map("trader_address")
+  /// The Uniswap V3 Swap event's `sender` — whichever address called the pool's `swap()`,
+  /// almost always a router contract rather than the end user. Kept for audit/future
+  /// refinement only; never used as trader identity. Same nullability note as traderAddress.
+  senderAddress String? @map("sender_address")
+
   createdAt DateTime @default(now()) @map("created_at")
 
-  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+  tokenMarket TokenMarket   @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+  trader      Wallet?       @relation(fields: [traderAddress], references: [address], onDelete: SetNull)
+  likes       ActivityLike[]
 
   @@unique([chainId, txHash, logIndex])
   @@index([tokenMarketId, blockTimestamp])
+  /// Trader profile activity + following-feed lookups (`WHERE trader_address = ... ORDER BY
+  /// block_timestamp DESC`).
+  @@index([traderAddress, blockTimestamp])
+  /// Global activity feed cursor pagination (`ORDER BY block_timestamp DESC, id DESC`) — see
+  /// docs/SOCIAL.md#pagination.
+  @@index([blockTimestamp, id])
   @@map("swaps")
 }
 
@@ -188,4 +220,89 @@ model IngestionCursor {
   tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Cascade)
 
   @@map("ingestion_cursors")
+}
+
+// ---------------------------------------------------------------------------------------
+// Phase 2: social layer. See docs/SOCIAL.md for the full architecture. Wallet-first, per
+// docs/WALLET_SECURITY.md — a wallet is tracked and has a public trading identity whether
+// or not anyone ever signs up; `User` is the optional account layered on top of it.
+// ---------------------------------------------------------------------------------------
+
+/// A blockchain address with observed public trading activity — Fomo's "trader," tracked
+/// independent of whether anyone has ever signed up (docs/WALLET_SECURITY.md's
+/// wallet-first identity model). Rows are created lazily by the ingestion worker the first
+/// time an address appears as a swap's trader — never by a user action (following an
+/// address that has never traded returns 404, not a phantom profile — see
+/// docs/SOCIAL.md#trader-identity). `address` is lowercased for case-insensitive EVM
+/// comparisons and doubles as the stable public trader id used in `/trader/[address]`.
+model Wallet {
+  address     String   @id
+  /// Set only once a linked User chooses a display identity — never inferred or guessed.
+  displayName String?  @map("display_name")
+  avatarUrl   String?  @map("avatar_url")
+  /// The block timestamp of this wallet's first indexed swap — genuinely "first seen
+  /// trading," not "first followed" or "first requested."
+  firstSeenAt DateTime @map("first_seen_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user    User?
+  trades  Swap[]
+  follows Follow[]
+
+  @@map("wallets")
+}
+
+/// An authenticated Fomo account — the optional layer on top of Wallet (see
+/// docs/WALLET_SECURITY.md). Phase 2 issues only an anonymous session (see
+/// apps/api/src/identity — no wallet-ownership claim is made or trusted); `walletAddress`
+/// exists so a future verified wallet link (real SIWE — docs/WALLET_SECURITY.md's documented
+/// login method) has somewhere to attach without a further migration. Until that ships, it
+/// stays null for every account Phase 2 creates.
+model User {
+  id            String   @id @default(uuid())
+  walletAddress String?  @unique @map("wallet_address")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  wallet  Wallet?        @relation(fields: [walletAddress], references: [address], onDelete: SetNull)
+  follows Follow[]
+  likes   ActivityLike[]
+
+  @@map("users")
+}
+
+/// A User following a Wallet's public trading activity — the following feed's source of
+/// truth. Uniqueness enforced at the DB level so a duplicate follow (double-click, retry)
+/// can never produce two rows.
+model Follow {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  walletAddress String   @map("wallet_address")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet Wallet @relation(fields: [walletAddress], references: [address], onDelete: Cascade)
+
+  @@unique([userId, walletAddress])
+  /// Follower counts and follower lists for a trader profile (`WHERE wallet_address = ?`).
+  @@index([walletAddress])
+  @@map("follows")
+}
+
+/// A User liking one activity item. An activity item *is* a Swap (see the comment on
+/// `Swap` above) — this table adds engagement on top of that authoritative row rather than
+/// duplicating it. Uniqueness enforced at the DB level, same reasoning as Follow.
+model ActivityLike {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  swapId    String   @map("swap_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  swap Swap @relation(fields: [swapId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, swapId])
+  /// Batch like-count lookups for a page of activity items (`WHERE swap_id IN (...)`).
+  @@index([swapId])
+  @@map("activity_likes")
 }

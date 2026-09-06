@@ -68,6 +68,7 @@ async function main(): Promise<void> {
       },
       env.CHAIN_RPC_URL,
       logger,
+      redis,
     );
 
     await ingestion.seed().catch((error: Error) => {

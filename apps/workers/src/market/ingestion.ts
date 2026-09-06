@@ -7,6 +7,8 @@ import {
 } from '@fomo/chain-adapters';
 import type { Prisma } from '@fomo/db';
 import { prisma } from '@fomo/db';
+import { ACTIVITY_REALTIME_CHANNEL, normalizeEvmAddress } from '@fomo/domain';
+import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { BASE_SEED_MARKETS, USDC_ADDRESS_BASE, type SeedMarket } from './seed-markets';
 
@@ -46,6 +48,7 @@ export class MarketIngestionService {
     private readonly config: MarketIngestionConfig,
     rpcUrl: string,
     private readonly logger: Logger,
+    private readonly redis: Redis,
   ) {
     this.poolReader = new UniswapV3PoolReader({ rpcUrl });
     this.tokenReader = new EvmChainDataProvider({
@@ -297,6 +300,13 @@ export class MarketIngestionService {
         }
 
         const rows: Prisma.SwapCreateManyInput[] = [];
+        // Trader wallets that must exist before `rows` can be inserted — `Swap.traderAddress`
+        // is a foreign key to `wallets.address`. Keyed by address so a wallet appearing in
+        // several events this chunk is only upserted once, with the earliest block
+        // timestamp seen — a genuine "first observed trading," never today's date, and
+        // never overwritten for a wallet we've already seen in an earlier tick (see the
+        // skipDuplicates upsert below).
+        const walletFirstSeen = new Map<string, Date>();
         for (const event of events) {
           const key = event.blockNumber.toString();
           let blockTimestamp = blockTimestampCache.get(key);
@@ -319,6 +329,17 @@ export class MarketIngestionService {
 
           const priceUsd = priceInQuote * quoteUsdPrice;
           const volumeUsd = Math.abs(baseAmount) * priceUsd;
+          // See the traderAddress/senderAddress comments on the Swap model in
+          // schema.prisma — recipient is the trader-identity heuristic, sender is kept for
+          // audit only. Null (not fabricated) when the log's indexed topic failed to decode.
+          const traderAddress = event.recipient ? normalizeEvmAddress(event.recipient) : null;
+          const senderAddress = event.sender ? normalizeEvmAddress(event.sender) : null;
+
+          if (traderAddress) {
+            const existing = walletFirstSeen.get(traderAddress);
+            if (!existing || blockTimestamp < existing) walletFirstSeen.set(traderAddress, blockTimestamp);
+          }
+
           rows.push({
             chainId: market.chainId,
             tokenMarketId: market.id,
@@ -331,6 +352,8 @@ export class MarketIngestionService {
             priceUsd,
             volumeUsd,
             side: baseAmount > 0 ? 'sell' : 'buy', // pool received base token => someone sold it
+            traderAddress,
+            senderAddress,
           });
 
           if (!minTs || blockTimestamp < minTs) minTs = blockTimestamp;
@@ -341,8 +364,15 @@ export class MarketIngestionService {
         // propagates out and leaves the cursor exactly where it was, so a persistence
         // failure is retried next tick rather than skipped.
         if (rows.length > 0) {
+          if (walletFirstSeen.size > 0) {
+            await prisma.wallet.createMany({
+              data: Array.from(walletFirstSeen, ([address, firstSeenAt]) => ({ address, firstSeenAt })),
+              skipDuplicates: true,
+            });
+          }
           await prisma.swap.createMany({ data: rows, skipDuplicates: true });
           totalSwaps += rows.length;
+          await this.publishNewActivity(market.id, rows.length);
         }
 
         cursor = chunkEnd;
@@ -366,6 +396,25 @@ export class MarketIngestionService {
     // priceChange24hPct decay correctly as old activity ages out of the 24h window rather
     // than holding a stale high-water mark forever. See recomputeRollups.
     await this.recomputeRollups(market.id);
+  }
+
+  /**
+   * Tells the API's realtime layer that new activity landed, so a connected feed can
+   * refetch instead of waiting for its next poll — see docs/SOCIAL.md#realtime. Deliberately
+   * a bare ping (market id + count), not the activity payload itself: the worker doesn't
+   * know or need to know the API's response shape, and a client that misses the message
+   * just catches up on its next scheduled refetch. Never allowed to fail the tick — a
+   * down Redis means slower-feeling activity, not broken ingestion.
+   */
+  private async publishNewActivity(tokenMarketId: string, count: number): Promise<void> {
+    try {
+      await this.redis.publish(
+        ACTIVITY_REALTIME_CHANNEL,
+        JSON.stringify({ tokenMarketId, count, atIso: new Date().toISOString() }),
+      );
+    } catch (error) {
+      this.logger.warn({ err: error }, 'Failed to publish new-activity event — feed will catch up on next poll');
+    }
   }
 
   /**
@@ -412,6 +461,20 @@ export class MarketIngestionService {
       _sum: { volumeUsd: true },
     });
 
+    // Phase 2 trending inputs — COUNT(DISTINCT trader_address) has no Prisma aggregate
+    // equivalent, hence the raw query (same pattern as the candle time_bucket query above).
+    // Reads directly from `swaps` (not `candles`, which don't carry a trader), still scoped
+    // to the same rolling 24h window as volume24hUsd.
+    // A bare aggregate with no GROUP BY always returns exactly one row, even when zero
+    // swaps match — the `!` reflects that guarantee, not an assumption.
+    const [activityStats] = await prisma.$queryRaw<{ trade_count: bigint; unique_traders: bigint }[]>`
+      SELECT COUNT(*) AS trade_count, COUNT(DISTINCT trader_address) AS unique_traders
+      FROM swaps
+      WHERE token_market_id = ${tokenMarketId}::text
+        AND block_timestamp >= ${since24h}
+    `;
+    const stats = activityStats!;
+
     const oldestRelevantCandle = await prisma.candle.findFirst({
       where: { tokenMarketId, bucketStart: { lte: since24h } },
       orderBy: { bucketStart: 'desc' },
@@ -436,14 +499,20 @@ export class MarketIngestionService {
     // fully known and must reflect it exactly — including 0 once every swap behind the
     // current figure has aged out of it. Before that first swap, `undefined` (leave the
     // column at its default null) is still the honest "unknown," not "confirmed zero" —
-    // see the volume24hUsd comment on TokenMarket in schema.prisma.
-    const volume24hUsd = oldestCandleOverall === null ? undefined : (volumeRows._sum.volumeUsd ?? 0);
+    // see the volume24hUsd comment on TokenMarket in schema.prisma. Same rule applies to
+    // the two Phase 2 activity stats below.
+    const everTraded = oldestCandleOverall !== null;
+    const volume24hUsd = everTraded ? (volumeRows._sum.volumeUsd ?? 0) : undefined;
+    const tradeCount24h = everTraded ? Number(stats.trade_count) : undefined;
+    const uniqueTraders24h = everTraded ? Number(stats.unique_traders) : undefined;
 
     await prisma.tokenMarket.update({
       where: { id: tokenMarketId },
       data: {
         volume24hUsd,
         priceChange24hPct, // explicitly null until 24h of real history exists
+        tradeCount24h,
+        uniqueTraders24h,
       },
     });
   }
