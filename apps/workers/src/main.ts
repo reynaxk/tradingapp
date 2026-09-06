@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import { EnvSchema } from './config/env';
 import { createLogger } from './lib/logger';
 import { MarketIngestionService } from './market/ingestion';
+import { TradeSweepService } from './trading/sweep';
 
 /**
  * Phase 0 proved DB, Redis, and the chain adapter all connect, and that the process
@@ -101,12 +102,47 @@ async function main(): Promise<void> {
     logger.warn({ dbReady, chainReady }, 'Market ingestion disabled this run: a required dependency is down');
   }
 
+  // The real numeric EVM chain id (e.g. 8453) that TradeTransaction.chainId is stored
+  // as — distinct from Chain.id (an internal DB row id) and not itself a separate env var,
+  // since CHAIN_IDENTIFIER (a CAIP-2 string, "eip155:8453") already names it authoritatively.
+  const tradeChainId = Number(env.CHAIN_IDENTIFIER.split(':')[1]);
+
+  let tradeSweepTicker: NodeJS.Timeout | undefined;
+  if (dbReady && chainReady && Number.isInteger(tradeChainId)) {
+    const sweep = new TradeSweepService(tradeChainId, chainAdapter, logger);
+
+    let sweepRunning = false;
+    const runSweep = async (): Promise<void> => {
+      if (sweepRunning) {
+        logger.warn('Skipped trade sweep tick: previous tick still running');
+        return;
+      }
+      sweepRunning = true;
+      const startedAt = Date.now();
+      try {
+        const result = await sweep.sweepPendingTransactions();
+        logger.info({ ...result, durationMs: Date.now() - startedAt }, 'Trade sweep tick complete');
+      } catch (error) {
+        logger.error({ err: error }, 'Trade sweep tick failed — will retry next tick');
+      } finally {
+        sweepRunning = false;
+      }
+    };
+
+    await runSweep();
+    tradeSweepTicker = setInterval(() => void runSweep(), env.TRADE_SWEEP_INTERVAL_SECONDS * 1000);
+    tradeSweepTicker.unref();
+  } else {
+    logger.warn({ dbReady, chainReady, tradeChainId }, 'Trade sweep disabled this run: a required dependency is down or CHAIN_IDENTIFIER is not a parseable eip155 chain id');
+  }
+
   logger.info('Worker ready');
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Worker shutting down');
     clearInterval(heartbeat);
     if (marketTicker) clearInterval(marketTicker);
+    if (tradeSweepTicker) clearInterval(tradeSweepTicker);
     await Promise.allSettled([redis.quit(), prisma.$disconnect()]);
     process.exit(0);
   };
