@@ -212,7 +212,11 @@ describe('QuoteService', () => {
       expect(quote.safetyNote.toLowerCase()).not.toContain('safe to trade');
       expect(quote.provider).toBe('0x');
       expect(quote.expiresAt).toBeDefined();
-      expect(new Date(quote.expiresAt).getTime() - new Date(quote.createdAt).getTime()).toBe(TRADING_DEFAULTS.quoteTtlSeconds * 1000);
+      // expiresAt and createdAt come from two separate Date.now() calls a few lines apart
+      // (createdAt via the mocked prisma.create, expiresAt computed just before it) — allow
+      // a small real-clock tolerance instead of exact equality.
+      const ttlMs = new Date(quote.expiresAt).getTime() - new Date(quote.createdAt).getTime();
+      expect(Math.abs(ttlMs - TRADING_DEFAULTS.quoteTtlSeconds * 1000)).toBeLessThan(50);
       expect(quote.token.address).toBe(TOKEN.contractAddress);
       expect(quote.quoteToken.address).toBe(QUOTE_TOKEN.contractAddress);
     });
