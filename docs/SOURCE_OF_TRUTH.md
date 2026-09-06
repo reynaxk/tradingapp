@@ -63,17 +63,24 @@ never marks a trade "complete" from the client's optimistic submission alone.
 | Current price/liquidity/volume/24h-change/trending stats | `token_markets`'s own columns | A **cache**, refreshed from `swaps`/`candles` every tick — the raw history in `swaps` is what's actually authoritative. `trade_count_24h`/`unique_traders_24h` (Phase 2) follow the exact same rule as `volume_24h_usd`. |
 | Ingestion progress | `ingestion_cursors` table | One row per market; the only state a restart needs to resume correctly. |
 | Trader identity | `wallets` table | Wallet-first (see `docs/WALLET_SECURITY.md`) — created lazily by the worker the first time an address is observed trading, never by a user action. See `docs/SOCIAL.md#trader-identity`. |
-| Authenticated accounts | `users` table | Optional layer above `Wallet`; Phase 2's session is anonymous (no wallet-ownership claim) — see `docs/SOCIAL.md#authentication`. |
+| Authenticated accounts | `users` table | Optional layer above `Wallet`; Phase 2's session is anonymous. `Wallet.userId` links a wallet to one only after a real signature check — see `docs/TRADING.md#wallet-ownership`. |
 | Follow relationships | `follows` table | `(userId, walletAddress)` unique — see `docs/SOCIAL.md#follow-system`. |
 | Activity likes | `activity_likes` table | Keyed off `Swap.id`, not a copy of it — see `docs/SOCIAL.md#social-signals`. |
+| Wallet ownership challenges | `wallet_challenges` table | Single-use, expiring nonces — never a source of truth once consumed. See `docs/TRADING.md#wallet-ownership`. |
+| Trade quotes | `trade_quotes` table | A priced, time-boxed offer from the real aggregator — never invented, never mutated after creation. See `docs/TRADING.md#quote-system`. |
+| Trade transactions | `trade_transactions` table | Created only once a real broadcast tx hash exists; `status` moves only from a real on-chain receipt (or, for `EXPIRED`, a bounded timeout) — never a client's say-so. See `docs/TRADING.md#transaction-lifecycle`. |
 
-Phase 3+ adds `transactions` and derived rollups (`positions`, real PnL) on the same
-principle: **rebuildable** from raw history, never written directly, so a change to PnL
-logic never requires a data migration to "fix" numbers baked in earlier. `swaps`/`candles`
-(Phase 1) and the Phase 2 tables above already follow this pattern — it isn't new in a
-later phase, just applied again. Trader stats in Phase 2 (`docs/SOCIAL.md#trader-stats`)
-deliberately stop short of PnL/ROI/win-rate for exactly this reason: Fomo has no cost-basis
-data yet, so those numbers aren't rebuildable from anything real.
+Phase 3's `trade_transactions` is a deliberate **exception** to "rebuildable from raw
+history, never written directly": a trade transaction's `status` cannot be derived from
+anything else Fomo stores — it exists only by asking the chain itself for a receipt (or,
+for a background sweep, polling it) — so it's the one place Phase 3 writes an authoritative
+fact directly rather than caching a value computed from other rows. This doesn't relax the
+core rule so much as name its edge: a real external system (the blockchain) is still the
+actual source of truth, `trade_transactions.status` is just where Fomo's own database
+records the answer it got back, exactly like `ingestion_cursors` records ingestion progress
+rather than deriving it. Trader stats in Phase 2 (`docs/SOCIAL.md#trader-stats`) still stop
+short of PnL/ROI/win-rate for the original reason: Fomo has no cost-basis data, so those
+numbers aren't rebuildable from anything real, in Phase 3 or otherwise.
 
 ## Never fabricate a chain-derived value
 
