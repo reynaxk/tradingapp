@@ -31,12 +31,22 @@ export const TRADING_DEFAULTS = {
    *  invitation to sandwich the trade; reject it rather than trust it. */
   maxSlippageBps: 2000,
   quoteTtlSeconds: 30,
+  /** How long a submitted transaction can sit with no receipt before Phase 3 gives up
+   *  watching it and marks it EXPIRED (likely dropped/replaced in the mempool) rather than
+   *  polling forever — see docs/TRADING.md#transaction-lifecycle. Base's block time is
+   *  ~2s, so 30 minutes is generous, not tight. */
+  pendingTransactionTimeoutMinutes: 30,
   /** Price impact at/above this warrants a visible warning but not blocking the trade. */
   highPriceImpactBps: 500,
   /** Price impact at/above this requires the explicit acknowledgement described in
    *  docs/TRADING.md#price-impact before the UI allows signing. */
   extremePriceImpactBps: 1500,
 } as const;
+
+/** The exact, honest wording for every trade surface — see docs/TRADING.md#token-safety.
+ *  Never "Safe" or "Verified": Fomo's checks are real but bounded (liquidity, staleness,
+ *  that a route exists), not a security audit. */
+export const SAFETY_DISCLAIMER = 'No known issues detected by available checks.';
 
 export type PriceImpactLevel = 'normal' | 'high' | 'extreme';
 
@@ -124,6 +134,10 @@ export const TradeQuoteSchema = z.object({
   expiresAt: z.string().datetime(),
   createdAt: z.string().datetime(),
   unsignedTx: UnsignedTransactionSchema,
+  /** See SAFETY_DISCLAIMER above — a fixed, honest disclosure string, never a "Safe" badge. */
+  safetyNote: z.string(),
+  requiresApproval: z.boolean(),
+  approvalSpender: z.string().nullable(),
 });
 export type TradeQuoteDto = z.infer<typeof TradeQuoteSchema>;
 
