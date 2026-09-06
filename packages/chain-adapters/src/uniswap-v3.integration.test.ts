@@ -44,13 +44,29 @@ describe('UniswapV3PoolReader (live Base mainnet)', () => {
     const latest = await reader.getLatestBlockNumber();
     const events = await reader.getSwapEvents(WETH_USDC_POOL, latest - 2000n, latest);
 
-    // This pool trades constantly; a 2000-block window (~1hr) should never be empty, but
-    // if it somehow is, assert the honest empty-array contract rather than force a length.
-    for (const event of events) {
+    // This pool trades constantly; a 2000-block window (~1hr) should never come back
+    // null (RPC failure) or empty, but if it's somehow empty, assert the honest
+    // empty-array contract rather than force a length.
+    expect(events).not.toBeNull();
+    for (const event of events!) {
       expect(event.txHash).toMatch(/^0x[a-fA-F0-9]{64}$/);
       expect(event.sqrtPriceX96).toBeGreaterThan(0n);
       // Exactly one side of a swap is positive (paid into the pool), the other negative.
       expect(event.amount0 > 0n !== event.amount1 > 0n).toBe(true);
     }
   }, 30_000);
+
+  it('returns a real empty array — not null — for a range with genuinely no Swap events', async () => {
+    // Base's very first blocks, long before this pool existed: a legitimate zero-result
+    // eth_getLogs query, which must come back `[]` (success) rather than `null` (failure).
+    const reader = new UniswapV3PoolReader({ rpcUrl: RPC_URL });
+    const events = await reader.getSwapEvents(WETH_USDC_POOL, 1n, 2n);
+    expect(events).toEqual([]);
+  }, 20_000);
+
+  it('returns null, not [], when eth_getLogs itself fails', async () => {
+    const reader = new UniswapV3PoolReader({ rpcUrl: 'http://127.0.0.1:0' });
+    const events = await reader.getSwapEvents(WETH_USDC_POOL, 1n, 2n);
+    expect(events).toBeNull();
+  }, 20_000);
 });

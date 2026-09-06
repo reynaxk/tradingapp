@@ -49,6 +49,15 @@ describe('computeDiscoveryScore', () => {
     expect(score).toBeNull();
   });
 
+  it('excludes a market with a future lastPriceUpdateAt (clock skew / bad data) from ranking', () => {
+    const future = new Date(now.getTime() + 5 * 60_000);
+    const score = computeDiscoveryScore(
+      { volume24hUsd: 5_000_000, liquidityUsd: 2_000_000, priceChange24hPct: 12, lastPriceUpdateAt: future },
+      now,
+    );
+    expect(score).toBeNull();
+  });
+
   it('does not let an absurd percentage swing on a tiny denominator dominate the score', () => {
     // A move right at the clamp ceiling on real volume/liquidity...
     const atCeiling = computeDiscoveryScore(
@@ -103,5 +112,10 @@ describe('isPriceStale', () => {
   it('treats an update past the staleness window as stale', () => {
     const old = new Date(now.getTime() - (DISCOVERY_RANKING.maxStalenessMinutes + 1) * 60_000);
     expect(isPriceStale(old, now)).toBe(true);
+  });
+
+  it('treats a future timestamp as stale rather than as impossibly fresh', () => {
+    const future = new Date(now.getTime() + 5 * 60_000);
+    expect(isPriceStale(future, now)).toBe(true);
   });
 });

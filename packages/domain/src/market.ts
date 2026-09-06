@@ -106,5 +106,9 @@ export function isPriceStale(lastPriceUpdateAt: Date | string | null, now: Date 
   if (lastPriceUpdateAt === null) return true;
   const last = typeof lastPriceUpdateAt === 'string' ? new Date(lastPriceUpdateAt) : lastPriceUpdateAt;
   const ageMinutes = (now.getTime() - last.getTime()) / 60_000;
+  // A negative age means lastPriceUpdateAt is in the future — clock skew or bad data, never
+  // a legitimately "fresher than fresh" snapshot. Treat it defensively as stale rather than
+  // let it read as the most current price on record.
+  if (ageMinutes < 0) return true;
   return ageMinutes > DISCOVERY_RANKING.maxStalenessMinutes;
 }

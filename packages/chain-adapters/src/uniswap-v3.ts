@@ -28,9 +28,11 @@ export interface DecodedSwapEvent {
  * shape; nothing outside `packages/chain-adapters` should import `uniswap-v3-abi.ts`
  * directly. See docs/CHAIN_ADAPTERS.md.
  *
- * Every method returns `null` (or an empty array) on failure rather than throwing through
- * to the caller for anything short of a configuration error — ingestion is expected to
- * skip a market for one tick rather than crash the worker over a single bad RPC response.
+ * Every method returns `null` on failure rather than throwing through to the caller for
+ * anything short of a configuration error — ingestion is expected to skip a market for one
+ * tick rather than crash the worker over a single bad RPC response. `getSwapEvents` is the
+ * one method where failure and "genuinely found nothing" must stay distinguishable, so its
+ * empty-but-successful result is `[]`, never conflated with the `null` failure case.
  */
 export class UniswapV3PoolReader {
   private readonly client: PublicClient;
@@ -98,9 +100,15 @@ export class UniswapV3PoolReader {
    * Fetches Swap events for `poolAddress` in [fromBlock, toBlock]. The caller is
    * responsible for keeping the range within what the configured RPC will accept in one
    * request (observed ~10,000 blocks on public Base RPC before requests start failing) —
-   * see the chunking in apps/workers/src/market/ingest.ts.
+   * see the chunking in apps/workers/src/market/ingestion.ts.
+   *
+   * Returns `null` on an RPC failure — deliberately distinct from `[]`, which means the
+   * query succeeded and genuinely found no Swap events in that range. Callers must treat
+   * `null` as "this range was not observed" and must not advance a persisted cursor past
+   * it: collapsing the two into a bare `[]` would make a transient RPC error look like a
+   * quiet block, and ingestion would silently and permanently skip real swaps.
    */
-  async getSwapEvents(poolAddress: string, fromBlock: bigint, toBlock: bigint): Promise<DecodedSwapEvent[]> {
+  async getSwapEvents(poolAddress: string, fromBlock: bigint, toBlock: bigint): Promise<DecodedSwapEvent[] | null> {
     try {
       const logs = await this.client.getLogs({
         address: poolAddress as `0x${string}`,
@@ -117,7 +125,7 @@ export class UniswapV3PoolReader {
         sqrtPriceX96: log.args.sqrtPriceX96 ?? 0n,
       }));
     } catch {
-      return [];
+      return null;
     }
   }
 }

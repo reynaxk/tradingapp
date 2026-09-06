@@ -273,89 +273,108 @@ export class MarketIngestionService {
 
     const latestBlock = await this.poolReader.getLatestBlockNumber();
     const cursorBlock = market.cursor!.lastProcessedBlock;
-    if (latestBlock <= cursorBlock) return;
 
-    const targetBlock = bigintMin(latestBlock, cursorBlock + MAX_BLOCKS_PER_TICK);
-    const blockTimestampCache = new Map<string, Date>();
-    let cursor = cursorBlock;
-    let totalSwaps = 0;
-    let minTs: Date | null = null;
-    let maxTs: Date | null = null;
+    if (latestBlock > cursorBlock) {
+      const targetBlock = bigintMin(latestBlock, cursorBlock + MAX_BLOCKS_PER_TICK);
+      const blockTimestampCache = new Map<string, Date>();
+      let cursor = cursorBlock;
+      let totalSwaps = 0;
+      let minTs: Date | null = null;
+      let maxTs: Date | null = null;
 
-    while (cursor < targetBlock) {
-      const chunkEnd = bigintMin(targetBlock, cursor + LOG_CHUNK_BLOCKS);
-      const events = await this.poolReader.getSwapEvents(market.pairAddress, cursor + 1n, chunkEnd);
-
-      const rows: Prisma.SwapCreateManyInput[] = [];
-      for (const event of events) {
-        const key = event.blockNumber.toString();
-        let blockTimestamp = blockTimestampCache.get(key);
-        if (!blockTimestamp) {
-          const ts = await this.poolReader.getBlockTimestamp(event.blockNumber);
-          if (!ts) continue; // can't honestly place this swap in time — skip it, don't guess
-          blockTimestamp = ts;
-          blockTimestampCache.set(key, blockTimestamp);
-          await sleep(RPC_CALL_DELAY_MS);
+      while (cursor < targetBlock) {
+        const chunkEnd = bigintMin(targetBlock, cursor + LOG_CHUNK_BLOCKS);
+        const events = await this.poolReader.getSwapEvents(market.pairAddress, cursor + 1n, chunkEnd);
+        if (events === null) {
+          // eth_getLogs itself failed for this range — distinct from a successful query
+          // that just found nothing. Stop here without touching the cursor, so the next
+          // tick retries this exact range instead of silently skipping it forever.
+          this.logger.warn(
+            { pool: market.pairAddress, fromBlock: (cursor + 1n).toString(), toBlock: chunkEnd.toString() },
+            'Stopped swap ingestion: eth_getLogs failed — cursor left unadvanced, will retry this range next tick',
+          );
+          break;
         }
 
-        // priceFromSqrtPriceX96 always returns token1-per-token0; invert if base is token1
-        // so `priceInQuote` ends up as this market's base-token price in terms of its
-        // quote token, then convert to USD using this tick's resolved quote price.
-        const rawPrice = priceFromSqrtPriceX96(event.sqrtPriceX96, poolDec0, poolDec1);
-        const priceInQuote = rawPrice === null ? null : baseIsToken0 ? rawPrice : 1 / rawPrice;
-        const baseAmountRaw = baseIsToken0 ? event.amount0 : event.amount1;
-        const baseAmount = rawAmountToDecimal(baseAmountRaw, market.token.decimals);
-        if (priceInQuote === null) continue;
+        const rows: Prisma.SwapCreateManyInput[] = [];
+        for (const event of events) {
+          const key = event.blockNumber.toString();
+          let blockTimestamp = blockTimestampCache.get(key);
+          if (!blockTimestamp) {
+            const ts = await this.poolReader.getBlockTimestamp(event.blockNumber);
+            if (!ts) continue; // can't honestly place this swap in time — skip it, don't guess
+            blockTimestamp = ts;
+            blockTimestampCache.set(key, blockTimestamp);
+            await sleep(RPC_CALL_DELAY_MS);
+          }
 
-        const priceUsd = priceInQuote * quoteUsdPrice;
-        const volumeUsd = Math.abs(baseAmount) * priceUsd;
-        rows.push({
-          chainId: market.chainId,
-          tokenMarketId: market.id,
-          txHash: event.txHash,
-          logIndex: event.logIndex,
-          blockNumber: event.blockNumber,
-          blockTimestamp,
-          amount0Raw: event.amount0.toString(),
-          amount1Raw: event.amount1.toString(),
-          priceUsd,
-          volumeUsd,
-          side: baseAmount > 0 ? 'sell' : 'buy', // pool received base token => someone sold it
+          // priceFromSqrtPriceX96 always returns token1-per-token0; invert if base is token1
+          // so `priceInQuote` ends up as this market's base-token price in terms of its
+          // quote token, then convert to USD using this tick's resolved quote price.
+          const rawPrice = priceFromSqrtPriceX96(event.sqrtPriceX96, poolDec0, poolDec1);
+          const priceInQuote = rawPrice === null ? null : baseIsToken0 ? rawPrice : 1 / rawPrice;
+          const baseAmountRaw = baseIsToken0 ? event.amount0 : event.amount1;
+          const baseAmount = rawAmountToDecimal(baseAmountRaw, market.token.decimals);
+          if (priceInQuote === null) continue;
+
+          const priceUsd = priceInQuote * quoteUsdPrice;
+          const volumeUsd = Math.abs(baseAmount) * priceUsd;
+          rows.push({
+            chainId: market.chainId,
+            tokenMarketId: market.id,
+            txHash: event.txHash,
+            logIndex: event.logIndex,
+            blockNumber: event.blockNumber,
+            blockTimestamp,
+            amount0Raw: event.amount0.toString(),
+            amount1Raw: event.amount1.toString(),
+            priceUsd,
+            volumeUsd,
+            side: baseAmount > 0 ? 'sell' : 'buy', // pool received base token => someone sold it
+          });
+
+          if (!minTs || blockTimestamp < minTs) minTs = blockTimestamp;
+          if (!maxTs || blockTimestamp > maxTs) maxTs = blockTimestamp;
+        }
+
+        // Persist first, advance the cursor only once that succeeds — a thrown error here
+        // propagates out and leaves the cursor exactly where it was, so a persistence
+        // failure is retried next tick rather than skipped.
+        if (rows.length > 0) {
+          await prisma.swap.createMany({ data: rows, skipDuplicates: true });
+          totalSwaps += rows.length;
+        }
+
+        cursor = chunkEnd;
+        await prisma.ingestionCursor.update({
+          where: { tokenMarketId: market.id },
+          data: { lastProcessedBlock: cursor },
         });
-
-        if (!minTs || blockTimestamp < minTs) minTs = blockTimestamp;
-        if (!maxTs || blockTimestamp > maxTs) maxTs = blockTimestamp;
+        await sleep(RPC_CALL_DELAY_MS);
       }
 
-      if (rows.length > 0) {
-        await prisma.swap.createMany({ data: rows, skipDuplicates: true });
-        totalSwaps += rows.length;
+      if (totalSwaps > 0) {
+        this.logger.info(
+          { pool: market.pairAddress, symbol: market.token.symbol, swaps: totalSwaps, fromBlock: cursorBlock.toString(), toBlock: targetBlock.toString() },
+          'Ingested swaps',
+        );
+        await this.upsertCandlesFromSwaps(market.id, minTs!, maxTs!);
       }
-
-      cursor = chunkEnd;
-      await prisma.ingestionCursor.update({
-        where: { tokenMarketId: market.id },
-        data: { lastProcessedBlock: cursor },
-      });
-      await sleep(RPC_CALL_DELAY_MS);
     }
 
-    if (totalSwaps > 0) {
-      this.logger.info(
-        { pool: market.pairAddress, symbol: market.token.symbol, swaps: totalSwaps, fromBlock: cursorBlock.toString(), toBlock: targetBlock.toString() },
-        'Ingested swaps',
-      );
-      await this.recomputeCandlesAndRollups(market.id, minTs!, maxTs!);
-    }
+    // Recomputed every tick — including one with zero new swaps — so volume24hUsd and
+    // priceChange24hPct decay correctly as old activity ages out of the 24h window rather
+    // than holding a stale high-water mark forever. See recomputeRollups.
+    await this.recomputeRollups(market.id);
   }
 
   /**
-   * Recomputes candles for the given time range directly from `swaps` (the authoritative
-   * source), and refreshes the 24h volume/price-change cache on TokenMarket from that —
-   * never the other way around. Idempotent: re-running for the same range always produces
-   * the same candle rows.
+   * Upserts candles for the given time range directly from `swaps` (the authoritative
+   * source). Idempotent: re-running for the same range always produces the same candle
+   * rows. Only called when new swaps were actually found this tick — see
+   * `recomputeRollups` for the part of the pipeline that must still run even when none were.
    */
-  private async recomputeCandlesAndRollups(tokenMarketId: string, fromTs: Date, toTs: Date): Promise<void> {
+  private async upsertCandlesFromSwaps(tokenMarketId: string, fromTs: Date, toTs: Date): Promise<void> {
     const paddedFrom = new Date(fromTs.getTime() - BUCKET_MINUTES * 60_000);
 
     await prisma.$executeRaw`
@@ -377,7 +396,16 @@ export class MarketIngestionService {
       DO UPDATE SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                     close = EXCLUDED.close, volume_usd = EXCLUDED.volume_usd
     `;
+  }
 
+  /**
+   * Refreshes the 24h volume/price-change cache on TokenMarket from `candles` (never the
+   * other way around). Must run every ingestion tick — including one with zero new swaps —
+   * because the 24h window is time-based, not swap-based: old candles age out of it purely
+   * from wall-clock time passing, and both cached figures need to reflect that decay, not
+   * hold whatever value the last tick with real activity left behind.
+   */
+  private async recomputeRollups(tokenMarketId: string): Promise<void> {
     const since24h = new Date(Date.now() - 24 * 60 * 60_000);
     const volumeRows = await prisma.candle.aggregate({
       where: { tokenMarketId, bucketStart: { gte: since24h } },
@@ -404,11 +432,18 @@ export class MarketIngestionService {
       }
     }
 
+    // Once at least one swap has ever been indexed for this market, the 24h window is
+    // fully known and must reflect it exactly — including 0 once every swap behind the
+    // current figure has aged out of it. Before that first swap, `undefined` (leave the
+    // column at its default null) is still the honest "unknown," not "confirmed zero" —
+    // see the volume24hUsd comment on TokenMarket in schema.prisma.
+    const volume24hUsd = oldestCandleOverall === null ? undefined : (volumeRows._sum.volumeUsd ?? 0);
+
     await prisma.tokenMarket.update({
       where: { id: tokenMarketId },
       data: {
-        volume24hUsd: volumeRows._sum.volumeUsd ?? undefined,
-        priceChange24hPct: priceChange24hPct, // explicitly null until 24h of real history exists
+        volume24hUsd,
+        priceChange24hPct, // explicitly null until 24h of real history exists
       },
     });
   }

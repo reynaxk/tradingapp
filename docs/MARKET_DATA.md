@@ -106,7 +106,7 @@ dropped and recomputed from them at any time.
 
 **`priceChange24hPct` is `null`, not `0%`, until the market has at least 24h of genuinely
 indexed history** — a market seeded five minutes ago has no honest 24h-ago price to
-compare against, and Phase 1 doesn't pretend otherwise (see `recomputeCandlesAndRollups`
+compare against, and Phase 1 doesn't pretend otherwise (see `recomputeRollups`
 in `ingestion.ts`, `haveFullDay`). The very first tick after seeding a market backfills the
 last ~24h of real swap history (see "Indexing" below) specifically so this stops being
 true quickly, not to fake it in the meantime.
@@ -135,17 +135,25 @@ Cursor-based and restartable: `ingestion_cursors` persists `last_processed_block
 market. A tick advances the cursor in bounded chunks (`LOG_CHUNK_BLOCKS` = 5,000 blocks
 per `eth_getLogs` call — the public RPC starts failing above roughly 10–50k;
 `MAX_BLOCKS_PER_TICK` = 20,000 total per tick, so a large backfill spans several ticks
-rather than blocking one). The cursor only advances *after* that chunk's swaps are
-persisted, and every swap insert is idempotent
+rather than blocking one). The cursor only advances *after* that chunk's `eth_getLogs` call
+succeeds *and* its swaps are persisted — `getSwapEvents` returns `null` (never a bare `[]`)
+on an RPC failure specifically so a failed query can't be mistaken for "genuinely no swaps
+in this range" and silently skip it forever; ingestion stops for that market this tick and
+retries the same range next tick instead. Every swap insert is idempotent
 (`@@unique([chainId, txHash, logIndex])`, `skipDuplicates: true`) — a crash mid-chunk means
 the next tick re-fetches and re-inserts the same range harmlessly, never duplicates or
 corrupts state. A brand-new market's cursor starts at `latest block − ~24h of blocks`, so
 its first tick backfills real recent history instead of starting from nothing.
 
-Candles are recomputed (not appended) for the touched time range on every tick, directly
-from `swaps` via a `time_bucket`-grouped `INSERT ... ON CONFLICT DO UPDATE` — see
-`recomputeCandlesAndRollups`. Re-running it for the same range always produces the same
-rows.
+Candles are upserted (not appended) for the touched time range on every tick with new
+swaps, directly from `swaps` via a `time_bucket`-grouped `INSERT ... ON CONFLICT DO UPDATE`
+— see `upsertCandlesFromSwaps`. Re-running it for the same range always produces the same
+rows. `recomputeRollups` (the 24h `volume24hUsd`/`priceChange24hPct` refresh) runs on
+*every* tick regardless, including one with zero new swaps — the 24h window is time-based,
+not swap-based, so old candles must age out of `volume24hUsd` even on a quiet tick rather
+than leaving a stale figure in place. It's `0`, not `null`, once the market has ever had a
+swap indexed but nothing falls in the current window; `null` is reserved for a market that
+has never had a swap indexed at all — see the `volume24hUsd` comment in `schema.prisma`.
 
 **Rate limiting:** the free public Base RPC throttles concurrent requests (observed
 directly during development — see `docs/TESTING.md`). Every RPC call in the ingestion
@@ -189,7 +197,8 @@ anyone trying to understand a ranking — not reimplemented or restated as a sep
   with an extreme percentage move" case Phase 1 was asked to guard against.
 - **Staleness**: `isStale` (in `MarketSummary`) is `true` once `lastPriceUpdateAt` is
   older than 30 minutes (`isPriceStale` in `packages/domain`) — surfaced in the UI, not
-  silently hidden.
+  silently hidden. A `lastPriceUpdateAt` in the future (clock skew, bad data) is also
+  treated as stale, defensively, rather than read as the freshest price on record.
 
 Sort modes (`?sort=score|volume|liquidity|priceChange`) all apply the same liquidity gate;
 they only change which factor orders the (already-gated) result set. See
