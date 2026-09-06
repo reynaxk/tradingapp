@@ -35,6 +35,12 @@ export const SocialActivitySchema = z.object({
     symbol: z.string().nullable(),
     name: z.string().nullable(),
     logoUrl: z.string().nullable(),
+    /** Phase 3 — see docs/TRADING.md#quote-system. Lets a "Trade" action on an activity
+     *  card request a quote directly, without a second round-trip to /market. */
+    decimals: z.number().int().nullable(),
+    quoteAddress: z.string(),
+    quoteSymbol: z.string().nullable(),
+    quoteDecimals: z.number().int().nullable(),
   }),
   amountUsd: z.number(),
   tokenAmount: z.number(),
