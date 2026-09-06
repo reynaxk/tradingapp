@@ -5,7 +5,7 @@ import { EmptyState } from '@/components/market/EmptyState';
 import { MarketHeader } from '@/components/market/MarketHeader';
 import { MarketTable } from '@/components/market/MarketTable';
 import { TokenCard } from '@/components/market/TokenCard';
-import { ActivityFeed } from '@/components/social/ActivityFeed';
+import { ActivityFeedTabs } from '@/components/social/ActivityFeedTabs';
 import { TopTraders } from '@/components/social/TopTraders';
 import { TraderIdentity } from '@/components/social/TraderIdentity';
 import { fetchDiscoverMarkets } from '@/lib/market-api';
@@ -63,13 +63,7 @@ export default async function DiscoverPage({
               Real indexed trades from tracked markets, as they happen. See who&apos;s buying and selling right now.
             </p>
             <div className="mt-5">
-              <ActivityFeed
-                initialItems={activity.items}
-                initialCursor={activity.nextCursor}
-                scope={{ type: 'global' }}
-                emptyTitle="No recent activity yet."
-                emptyDetail="Once tracked markets see real swaps, they'll show up here."
-              />
+              <ActivityFeedTabs globalItems={activity.items} globalCursor={activity.nextCursor} />
             </div>
           </section>
         )}

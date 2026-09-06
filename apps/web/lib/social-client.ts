@@ -64,6 +64,13 @@ async function expectOk(res: Response, action: string): Promise<void> {
  * the real state using whatever session this browser already has — never creating a new
  * one just to check, since viewing a profile must never require a session.
  */
+/** True only if this browser already has a session — never creates one. Lets the UI show
+ *  an honest "follow someone to build your feed" empty state for a new visitor instead of
+ *  silently minting an anonymous session just because they clicked a tab. */
+export function hasStoredSession(): boolean {
+  return readStoredToken() !== null;
+}
+
 export async function checkFollowStatus(address: string): Promise<boolean> {
   const token = readStoredToken();
   if (!token) return false;
