@@ -8,6 +8,11 @@ import { z } from 'zod';
  * can't accidentally be used with a predictable value.
  */
 
+/** How long a wallet-ownership challenge stays valid before it must be re-requested — long
+ *  enough to approve in a wallet extension, short enough that a stale, unsigned challenge
+ *  is never usable — see docs/TRADING.md#wallet-ownership. */
+export const WALLET_CHALLENGE_TTL_MINUTES = 5;
+
 export interface SiweMessageParams {
   domain: string;
   address: string;
