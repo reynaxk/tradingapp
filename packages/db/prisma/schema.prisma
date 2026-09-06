@@ -119,6 +119,8 @@ model TokenMarket {
   swaps      Swap[]
   candles    Candle[]
   cursor     IngestionCursor?
+  tradeQuotes       TradeQuote[]
+  tradeTransactions TradeTransaction[]
 
   @@unique([chainId, pairAddress])
   @@index([tokenId])
@@ -230,43 +232,65 @@ model IngestionCursor {
 
 /// A blockchain address with observed public trading activity — Fomo's "trader," tracked
 /// independent of whether anyone has ever signed up (docs/WALLET_SECURITY.md's
-/// wallet-first identity model). Rows are created lazily by the ingestion worker the first
-/// time an address appears as a swap's trader — never by a user action (following an
-/// address that has never traded returns 404, not a phantom profile — see
+/// wallet-first identity model). Rows are created lazily — by the ingestion worker the
+/// first time an address appears as a swap's trader, or by Phase 3's wallet-verification
+/// flow if a user proves ownership of an address before ever trading (see
+/// docs/TRADING.md#wallet-ownership) — never by an unverified user action (following an
+/// address that has never traded still 404s, not a phantom profile — see
 /// docs/SOCIAL.md#trader-identity). `address` is lowercased for case-insensitive EVM
 /// comparisons and doubles as the stable public trader id used in `/trader/[address]`.
+///
+/// `userId` is set only once a signature has cryptographically proven ownership
+/// (`verifiedAt` non-null) — see docs/TRADING.md#wallet-ownership. A `User` may own several
+/// verified wallets; a `Wallet` is claimed by at most one `User`. Never trust a client
+/// claim that a wallet belongs to the caller — only this column, set exclusively by
+/// `WalletService#verifyChallenge`, is authoritative.
 model Wallet {
   address     String   @id
+  userId      String?  @map("user_id")
   /// Set only once a linked User chooses a display identity — never inferred or guessed.
   displayName String?  @map("display_name")
   avatarUrl   String?  @map("avatar_url")
-  /// The block timestamp of this wallet's first indexed swap — genuinely "first seen
-  /// trading," not "first followed" or "first requested."
+  /// The first time Fomo became aware of this wallet in *any* capacity — its first indexed
+  /// trade, or the moment a user verified ownership of it, whichever happened first. Never
+  /// backdated, never a guess.
   firstSeenAt DateTime @map("first_seen_at")
+  /// Non-null only after a signature has proven this address's owner controls it — see
+  /// docs/TRADING.md#wallet-ownership. Null forever for a wallet Fomo has only observed
+  /// trading and no one has claimed.
+  verifiedAt  DateTime? @map("verified_at")
+  /// Last time this wallet was used for an authenticated action (verification refresh, a
+  /// submitted trade) — distinct from `updatedAt`, which also ticks on unrelated field
+  /// changes like `displayName`.
+  lastUsedAt  DateTime? @map("last_used_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  user    User?
-  trades  Swap[]
-  follows Follow[]
+  user              User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  trades            Swap[]
+  follows           Follow[]
+  tradeQuotes       TradeQuote[]
+  tradeTransactions TradeTransaction[]
 
+  @@index([userId])
   @@map("wallets")
 }
 
 /// An authenticated Fomo account — the optional layer on top of Wallet (see
-/// docs/WALLET_SECURITY.md). Phase 2 issues only an anonymous session (see
-/// apps/api/src/identity — no wallet-ownership claim is made or trusted); `walletAddress`
-/// exists so a future verified wallet link (real SIWE — docs/WALLET_SECURITY.md's documented
-/// login method) has somewhere to attach without a further migration. Until that ships, it
-/// stays null for every account Phase 2 creates.
+/// docs/WALLET_SECURITY.md). Phase 2 issued only anonymous sessions; Phase 3 adds real
+/// wallet ownership (`docs/TRADING.md#wallet-ownership`) on the same session — one `User`
+/// can hold several verified `Wallet`s (see the back-relation on `Wallet.userId`), matching
+/// a person who uses more than one wallet with Fomo.
 model User {
-  id            String   @id @default(uuid())
-  walletAddress String?  @unique @map("wallet_address")
-  createdAt     DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now()) @map("created_at")
 
-  wallet  Wallet?        @relation(fields: [walletAddress], references: [address], onDelete: SetNull)
-  follows Follow[]
-  likes   ActivityLike[]
+  wallets           Wallet[]
+  follows           Follow[]
+  likes             ActivityLike[]
+  walletChallenges  WalletChallenge[]
+  tradeQuotes       TradeQuote[]
+  tradeTransactions TradeTransaction[]
 
   @@map("users")
 }
@@ -305,4 +329,138 @@ model ActivityLike {
   /// Batch like-count lookups for a page of activity items (`WHERE swap_id IN (...)`).
   @@index([swapId])
   @@map("activity_likes")
+}
+
+// ---------------------------------------------------------------------------------------
+// Phase 3: wallet ownership and trading. See docs/TRADING.md. Non-custodial by
+// construction — this schema never has anywhere to put a private key or a signed-on-our-
+// behalf transaction; see docs/WALLET_SECURITY.md.
+// ---------------------------------------------------------------------------------------
+
+/// A one-time nonce issued to prove ownership of `address` — see
+/// docs/TRADING.md#wallet-ownership. Tied to the session that requested it
+/// (`userId`, required: only an authenticated session can request a challenge), consumed
+/// exactly once (`usedAt`), and time-boxed (`expiresAt`). `message` is stored verbatim so
+/// verification recovers a signature against exactly what the wallet was shown — never a
+/// re-derived string that could drift from it.
+model WalletChallenge {
+  id        String    @id @default(uuid())
+  address   String
+  /// Cryptographically random, unique, single-use — see WalletService#createChallenge.
+  nonce     String    @unique
+  message   String
+  userId    String    @map("user_id")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([address])
+  @@index([expiresAt])
+  @@map("wallet_challenges")
+}
+
+/// A priced, time-boxed offer to swap `inputToken` for `outputToken`, obtained from a real
+/// swap aggregator (never invented — see docs/TRADING.md#quote-system) and never mutated
+/// after creation. Every token-amount field is the exact raw (pre-decimals) integer as a
+/// string — never a JS `number` — so no financial value here is ever subject to
+/// floating-point rounding. `unsignedTx` is a prepared, never-signed transaction; the
+/// server has no mechanism to sign it — see docs/WALLET_SECURITY.md.
+model TradeQuote {
+  id            String @id @default(uuid())
+  userId        String @map("user_id")
+  walletAddress String @map("wallet_address")
+  chainId       Int    @map("chain_id")
+  /// "BUY" or "SELL" of the tracked market's base token.
+  side          String
+  tokenMarketId String @map("token_market_id")
+  inputToken    String @map("input_token")
+  outputToken   String @map("output_token")
+
+  /// Raw integer units (pre-decimals), as strings — see the model comment above.
+  inputAmount          String @map("input_amount")
+  expectedOutputAmount String @map("expected_output_amount")
+  /// The floor `outputAmount` the built transaction actually enforces on-chain, after
+  /// `slippageBps` — what "slippage protection" concretely means here.
+  minOutputAmount      String @map("min_output_amount")
+
+  priceUsd       Decimal? @map("price_usd") @db.Decimal(38, 18)
+  priceImpactBps Int?     @map("price_impact_bps")
+  slippageBps    Int      @map("slippage_bps")
+
+  /// Denormalized onto the quote (not just read from live config) so a quote a user reviews
+  /// and later signs always executes at the fee it was quoted at — see
+  /// docs/TRADING.md#fees.
+  platformFeeBps    Int    @map("platform_fee_bps")
+  platformFeeAmount String @map("platform_fee_amount")
+
+  /// Which aggregator produced this quote (e.g. "0x") — see docs/TRADING.md#provider.
+  provider        String
+  providerQuoteId String? @map("provider_quote_id")
+  /// {to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas} — see
+  /// docs/TRADING.md#transaction-construction. Never contains a signature.
+  unsignedTx      Json    @map("unsigned_tx")
+
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet      Wallet           @relation(fields: [walletAddress], references: [address], onDelete: Cascade)
+  tokenMarket TokenMarket      @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+  transaction TradeTransaction?
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@map("trade_quotes")
+}
+
+/// A transaction the user's own wallet signed and broadcast — created only once a real
+/// transaction hash exists (see docs/TRADING.md#transaction-submission); there is
+/// deliberately no row for a quote the user never acted on or a signature the wallet
+/// rejected, since neither ever touches the chain. `status` starts at `PENDING` and moves
+/// only in response to a real on-chain receipt (or, for `EXPIRED`, giving up after polling
+/// for a bounded time) — never set to `CONFIRMED` from a client's say-so. See
+/// docs/TRADING.md#transaction-lifecycle.
+model TradeTransaction {
+  id            String @id @default(uuid())
+  userId        String @map("user_id")
+  walletAddress String @map("wallet_address")
+  quoteId       String @unique @map("quote_id")
+  chainId       Int    @map("chain_id")
+  txHash        String @map("tx_hash")
+  tokenMarketId String @map("token_market_id")
+  side          String
+
+  inputToken           String @map("input_token")
+  outputToken          String @map("output_token")
+  inputAmount          String @map("input_amount")
+  expectedOutputAmount String @map("expected_output_amount")
+  platformFeeAmount    String @map("platform_fee_amount")
+
+  status        TradeStatus @default(PENDING)
+  failureReason String?     @map("failure_reason")
+
+  submittedAt DateTime  @default(now()) @map("submitted_at")
+  confirmedAt DateTime? @map("confirmed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet      Wallet      @relation(fields: [walletAddress], references: [address], onDelete: Cascade)
+  quote       TradeQuote  @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+
+  @@unique([chainId, txHash])
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("trade_transactions")
+}
+
+/// See the status-transition comment on TradeTransaction above.
+enum TradeStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  EXPIRED
 }
