@@ -14,11 +14,16 @@ import { createTestApp } from './test-app';
 describe('Social (e2e)', () => {
   let app: INestApplication;
 
+  // Deliberately distinct from market.e2e-spec.ts's fixture addresses (same chain
+  // identifier, different base/quote/pool/trader addresses): Jest runs e2e spec *files* in
+  // parallel by default, and both suites share one live database, so reusing another
+  // spec's row identities causes real cross-file races (a concurrent afterAll deleting a
+  // tokenMarket row this suite is still mid-test with). See docs/TESTING.md.
   const chainIdentifier = 'eip155:8453';
-  const baseAddress = '0x4200000000000000000000000000000000000006';
-  const quoteAddress = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-  const poolAddress = '0x6c561B446416E1A00E8E93E221854d6eA4171372';
-  const traderAddress = '0x1111111111111111111111111111111111aaaa';
+  const baseAddress = '0x555555555555555555555555555555555555b111';
+  const quoteAddress = '0x666666666666666666666666666666666666c222';
+  const poolAddress = '0x777777777777777777777777777777777777d333';
+  const traderAddress = '0x111111111111111111111111111111111111aaaa';
   const untrackedWallet = '0x000000000000000000000000000000000000dEaD';
 
   let tokenMarketId: string;
@@ -36,12 +41,12 @@ describe('Social (e2e)', () => {
     const baseToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: baseAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'WETH', name: 'Wrapped Ether', decimals: 18 },
+      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'TEST', name: 'Test Token', decimals: 18 },
     });
     const quoteToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: quoteAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'USDC', name: 'USD Coin', decimals: 6 },
+      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'TESTQ', name: 'Test Quote', decimals: 6 },
     });
     const market = await prisma.tokenMarket.upsert({
       where: { chainId_pairAddress: { chainId: chain.id, pairAddress: poolAddress } },

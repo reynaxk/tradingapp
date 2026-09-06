@@ -103,6 +103,27 @@ Worth recording, since it's the point of testing rather than a formality:
   at all. Caught by re-reading the success criteria against what was actually wired into
   `apps/web/app/page.tsx`, not by a test (nothing was broken — a real feature was simply
   unused).
+- `apps/web`'s `jsdom` devDependency, added unpinned, resolved to `^30.0.1`, which pulls in
+  an `undici` version calling `webidl.util.markAsUncloneable` — an API not present in CI's
+  Node 20 (it worked locally under a newer Node). Pinned to `jsdom@25.0.1`. Not caught
+  locally, since nothing in this environment runs CI's exact Node version — a real gap in
+  local verification for a devDependency version bump specifically, worth remembering.
+- `social.e2e-spec.ts`'s trader address fixture was 38 hex characters, not 40 — the exact
+  same mistake `819746b` fixed in `market.e2e-spec.ts` during Phase 1, this time in a fresh
+  file. `AddressParamDto` correctly rejected it as malformed (400), which cascaded into
+  eight failing assertions across follow, like, trending, and top-traders tests that all
+  depend on that one address resolving. Caught only by CI (this sandbox has no live
+  Postgres to run e2e locally) — worth generating fixture addresses programmatically
+  (`'1'.repeat(40 - tail.length) + tail`) rather than hand-typing hex strings, given this is
+  now a repeat mistake.
+- `social.e2e-spec.ts` originally reused `market.e2e-spec.ts`'s exact chain/token/pool
+  fixture addresses. Jest runs e2e spec *files* in parallel by default (no `maxWorkers`
+  config), and both suites share one live database — the two `afterAll` hooks raced to
+  delete the same `tokenMarket` row, and mid-test queries in one file intermittently saw
+  rows the other file's `beforeAll`/`afterAll` was concurrently creating or deleting.
+  Fixed at both levels: `social.e2e-spec.ts` now uses fixture addresses distinct from every
+  other e2e spec, and `jest-e2e.json` sets `maxWorkers: 1` so e2e spec files never run
+  concurrently against the shared database again, regardless of what future spec files add.
 - Vitest's default esbuild JSX transform doesn't treat Next's `"jsx": "preserve"` tsconfig
   setting as the automatic runtime, so component tests failed immediately with `React is
   not defined`. Fixed with an explicit `esbuild: { jsx: 'automatic' }` in
