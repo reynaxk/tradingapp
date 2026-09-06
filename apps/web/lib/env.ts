@@ -25,10 +25,26 @@ export const env: ServerEnv = parseEnv(ServerEnvSchema, process.env);
  */
 export const ClientEnvSchema = z.object({
   NEXT_PUBLIC_API_BASE_URL: z.string().url().default('http://localhost:4000'),
+  /** Phase 3 — see docs/TRADING.md#chain-scope. The one chain the wallet-connect UI will
+   *  ever offer to trade on; must name the same chain apps/api's CHAIN_ID does. Public by
+   *  nature (every wallet already knows every chain id), so NEXT_PUBLIC_ is correct here
+   *  unlike API_BASE_URL above. */
+  NEXT_PUBLIC_CHAIN_ID: z.coerce.number().int().positive().default(8453),
+  /** A public RPC endpoint the *browser* reads from directly (e.g. to detect the wallet's
+   *  current network) — never the same trust boundary as apps/api's own CHAIN_RPC_URL, and
+   *  fine to expose since it's read-only and rate-limited server-side regardless. */
+  NEXT_PUBLIC_CHAIN_RPC_URL: z.string().url().default('https://mainnet.base.org'),
+  /** Optional: enables WalletConnect (mobile wallets that aren't an in-app browser) in
+   *  addition to injected/Coinbase Wallet connectors. Get one at https://cloud.reown.com —
+   *  wallet connect is simply omitted, not broken, when this isn't set. */
+  NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: z.string().optional(),
 });
 
 export type ClientEnv = z.infer<typeof ClientEnvSchema>;
 
 export const clientEnv: ClientEnv = parseEnv(ClientEnvSchema, {
   NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL,
+  NEXT_PUBLIC_CHAIN_ID: process.env.NEXT_PUBLIC_CHAIN_ID,
+  NEXT_PUBLIC_CHAIN_RPC_URL: process.env.NEXT_PUBLIC_CHAIN_RPC_URL,
+  NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID,
 });
