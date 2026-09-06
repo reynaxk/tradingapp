@@ -20,6 +20,15 @@ export interface DecodedSwapEvent {
   amount0: bigint;
   amount1: bigint;
   sqrtPriceX96: bigint;
+  /** Whichever address called the pool's `swap()` — usually a router contract, not the
+   *  end user. Null only if the log's indexed topic somehow failed to decode (should not
+   *  happen for a real Swap log) — never a fabricated address. See
+   *  docs/SOCIAL.md#trader-identity. */
+  sender: string | null;
+  /** The address that received this swap's output tokens — used as the trader identity
+   *  for this swap. Same null-on-decode-failure rule as sender. See
+   *  docs/SOCIAL.md#trader-identity. */
+  recipient: string | null;
 }
 
 /**
@@ -123,6 +132,8 @@ export class UniswapV3PoolReader {
         amount0: log.args.amount0 ?? 0n,
         amount1: log.args.amount1 ?? 0n,
         sqrtPriceX96: log.args.sqrtPriceX96 ?? 0n,
+        sender: log.args.sender ?? null,
+        recipient: log.args.recipient ?? null,
       }));
     } catch {
       return null;

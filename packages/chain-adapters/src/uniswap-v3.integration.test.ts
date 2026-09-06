@@ -53,6 +53,9 @@ describe('UniswapV3PoolReader (live Base mainnet)', () => {
       expect(event.sqrtPriceX96).toBeGreaterThan(0n);
       // Exactly one side of a swap is positive (paid into the pool), the other negative.
       expect(event.amount0 > 0n !== event.amount1 > 0n).toBe(true);
+      // Phase 2 trader identity: both indexed addresses decode off a real Swap log.
+      expect(event.sender).toMatch(/^0x[a-fA-F0-9]{40}$/);
+      expect(event.recipient).toMatch(/^0x[a-fA-F0-9]{40}$/);
     }
   }, 30_000);
 

@@ -17,7 +17,8 @@ class MarketApiError extends Error {
   }
 }
 
-async function apiGet<T>(path: string, revalidateSeconds: number): Promise<T | null> {
+/** Exported for lib/social-api.ts — same server-only fetch convention, one API base URL. */
+export async function apiGet<T>(path: string, revalidateSeconds: number): Promise<T | null> {
   const res = await fetch(`${env.API_BASE_URL}/v1${path}`, { next: { revalidate: revalidateSeconds } });
   if (res.status === 404) return null;
   if (!res.ok) {

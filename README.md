@@ -1,28 +1,39 @@
 # Fomo (working title)
 
 A social crypto discovery and trading platform. Phase 0 built the production foundation;
-**Phase 1 adds the first real product surface** — market discovery for a curated set of
-real tokens on Base, with genuine on-chain price/liquidity/volume, not mock data. See
-`docs/MARKET_DATA.md` for exactly how, and the architecture spec for the product vision
-and roadmap beyond this.
+Phase 1 added the first real product surface — market discovery for a curated set of real
+tokens on Base, with genuine on-chain price/liquidity/volume, not mock data (see
+`docs/MARKET_DATA.md`). **Phase 2 adds the social layer** — real trading activity as a live
+feed, wallet-first trader identity and profiles, follows, and activity-based trending — on
+the same indexed data, so people can see what other traders are actually doing. See
+`docs/SOCIAL.md` for exactly how, and the architecture spec for the product vision and
+roadmap beyond this.
 
-Not yet built: wallets, trading/swap execution, social features, notifications,
-multi-chain support. See [`docs/`](./docs) and the roadmap for when each lands.
+Not yet built: wallet signing/trading execution, verified wallet login (SIWE), comments,
+notifications delivery, multi-chain support. See [`docs/`](./docs) and the roadmap for when
+each lands.
 
 ## Repository structure
 
 ```text
 apps/
-  web/        Next.js app — Discover (/) and token detail (/market/[address]) are real.
-  api/        NestJS modular monolith — Market is real (read-only); Identity · Social ·
-              Trading · Notifications are still empty module boundaries.
+  web/        Next.js app — Discover (/), token detail (/market/[address]), and trader
+              profiles (/trader/[address]) are real. The live activity feed and follow/like
+              mutations are the one place the browser talks to the API directly — see
+              docs/SOCIAL.md#realtime.
+  api/        NestJS modular monolith — Market (read-only), Identity (anonymous sessions),
+              and Social (activity/trending/follows/likes) are real; Trading · Notifications
+              are still empty module boundaries.
   workers/    Independently deployable process. Runs real market-data ingestion on a
-              timer (apps/workers/src/market/) — see docs/MARKET_DATA.md.
+              timer (apps/workers/src/market/) — see docs/MARKET_DATA.md — and now also
+              captures trader identity and publishes a realtime activity ping; see
+              docs/SOCIAL.md.
 
 packages/
   config/          Shared tsconfig, ESLint, and Tailwind presets.
-  domain/          Shared TypeScript types, Zod schemas, parseEnv(), and the Discovery
-                    Score / staleness logic market ranking is built on.
+  domain/          Shared TypeScript types, Zod schemas, parseEnv(), the Discovery Score /
+                    staleness logic market ranking is built on, and (Phase 2) trader
+                    identity types, activity-cursor pagination, and the Trending Score.
   db/              Prisma schema, migrations, and a shared PrismaClient singleton.
   ui/              Shared React components (Button, Surface) and the `cn()` helper.
   chain-adapters/  ChainDataProvider (generic EVM reads) + UniswapV3PoolReader (Phase 1's
@@ -87,16 +98,20 @@ pnpm db:migrate:deploy    # apply existing migrations (production/CI)
 pnpm db:studio            # browse the database
 ```
 
-Phase 0's migration creates `chains`, `tokens`, `token_markets`. Phase 1's adds
-`swaps`, `candles`, `ingestion_cursors`, and price/liquidity/volume columns on
-`token_markets`. See `docs/SOURCE_OF_TRUTH.md` for why token metadata fields are nullable
-rather than defaulted and why price/liquidity live on `token_markets` rather than
-`tokens`, and `docs/MARKET_DATA.md` for the Phase 1 tables specifically.
+Phase 0's migration creates `chains`, `tokens`, `token_markets`. Phase 1's adds `swaps`,
+`candles`, `ingestion_cursors`, and price/liquidity/volume columns on `token_markets`.
+Phase 2's adds `wallets`, `users`, `follows`, `activity_likes`, plus
+`trader_address`/`sender_address` on `swaps` and `trade_count_24h`/`unique_traders_24h` on
+`token_markets` — all additive and nullable where the fact predates the migration, per
+`docs/SOCIAL.md`. See `docs/SOURCE_OF_TRUTH.md` for why token metadata fields are nullable
+rather than defaulted and why price/liquidity live on `token_markets` rather than `tokens`,
+`docs/MARKET_DATA.md` for the Phase 1 tables specifically, and `docs/SOCIAL.md` for Phase 2's.
 
 ## Testing
 
 ```bash
-pnpm test                            # every package's unit tests
+pnpm test                            # every package's unit tests (now includes component
+                                      # tests in apps/web via @testing-library/react + jsdom)
 pnpm --filter @fomo/api test:e2e     # API e2e tests — requires docker compose up -d
 ```
 
@@ -128,7 +143,9 @@ their `Dockerfile`s), Neon (Postgres), Upstash (Redis).
 
 - **`apps/web` never reads the database or a blockchain RPC directly** — only the API,
   and only in Server Components/Route Handlers (`API_BASE_URL` is server-only, never sent
-  to the browser).
+  to the browser). The one deliberate exception is Phase 2's live activity stream and
+  follow/like mutations, which structurally require a real browser-to-API connection —
+  see `docs/SOCIAL.md#realtime` and the separate, explicitly-public `NEXT_PUBLIC_API_BASE_URL`.
 - **`apps/api` is a modular monolith, not microservices.** `Identity`, `Social`,
   `Trading`, and `Notifications` are separate Nest modules, still empty; `Market` is the
   first one with real logic, and it's read-only — it never writes, only the worker does.

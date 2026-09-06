@@ -1,9 +1,30 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
+import type { Env } from '../config/env';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { OptionalAuthGuard } from './guards/optional-auth.guard';
+import { IdentityController } from './identity.controller';
+import { IdentityService } from './identity.service';
 
 /**
- * Empty on purpose. Owns users, wallets, and auth (email/passkey + SIWE) starting in
- * Phase 2 — see /docs/SOURCE_OF_TRUTH.md for the wallet-first data model this module will
- * implement. Registered now so the module boundary exists before the logic does.
+ * Owns users and session auth — see docs/SOCIAL.md#authentication and
+ * docs/WALLET_SECURITY.md for the login model this deliberately does not yet implement.
+ * Exports IdentityService and both guards so SocialModule (and anything else that needs
+ * "who is calling") can depend on this module without reaching into its internals.
  */
-@Module({})
+@Module({
+  imports: [
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) => ({
+        secret: config.get('JWT_SECRET', { infer: true }),
+        signOptions: { expiresIn: '90d' },
+      }),
+    }),
+  ],
+  controllers: [IdentityController],
+  providers: [IdentityService, JwtAuthGuard, OptionalAuthGuard],
+  exports: [IdentityService, JwtAuthGuard, OptionalAuthGuard],
+})
 export class IdentityModule {}

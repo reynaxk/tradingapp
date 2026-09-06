@@ -2,9 +2,9 @@ import Link from 'next/link';
 import { SearchBar } from './SearchBar';
 
 /**
- * Only "Discover" is a real destination in Phase 1 — no Markets/Traders links to
- * screens that don't exist (those imply trader profiles/leaderboards, explicitly
- * deferred). One honest nav item beats a row of dead links.
+ * "Discover" is the one top-level nav destination — trader profiles (`/trader/[address]`)
+ * are real as of Phase 2, but reached from activity/search/follows rather than a top-level
+ * link, since there's no trader *listing* page to point a nav item at yet.
  */
 export function MarketHeader({ searchValue }: { searchValue?: string }) {
   return (
