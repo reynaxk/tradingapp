@@ -73,14 +73,21 @@ export const DISCOVERY_RANKING = {
  * rationale. Log-scaling volume/liquidity keeps one whale market from mathematically
  * dominating every other factor; clamping momentum keeps a tiny-denominator percentage
  * spike from doing the same. Returns null for a market this formula shouldn't rank at all
- * (below the liquidity gate, or missing the inputs it needs) rather than a misleading 0.
+ * (below the liquidity gate, missing the inputs it needs, or stale — see
+ * DISCOVERY_RANKING.maxStalenessMinutes) rather than a misleading 0 or a ranking built on
+ * a snapshot that's no longer current.
  */
-export function computeDiscoveryScore(input: {
-  volume24hUsd: number | null;
-  liquidityUsd: number | null;
-  priceChange24hPct: number | null;
-}): number | null {
-  const { volume24hUsd, liquidityUsd, priceChange24hPct } = input;
+export function computeDiscoveryScore(
+  input: {
+    volume24hUsd: number | null;
+    liquidityUsd: number | null;
+    priceChange24hPct: number | null;
+    lastPriceUpdateAt: Date | string | null;
+  },
+  now: Date = new Date(),
+): number | null {
+  const { volume24hUsd, liquidityUsd, priceChange24hPct, lastPriceUpdateAt } = input;
+  if (isPriceStale(lastPriceUpdateAt, now)) return null;
   if (liquidityUsd === null || liquidityUsd < DISCOVERY_RANKING.minLiquidityUsd) return null;
   if (volume24hUsd === null || priceChange24hPct === null) return null;
 

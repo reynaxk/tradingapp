@@ -36,6 +36,7 @@ export class MarketService {
           volume24hUsd: row.volume24hUsd === null ? null : Number(row.volume24hUsd),
           liquidityUsd: row.liquidityUsd === null ? null : Number(row.liquidityUsd),
           priceChange24hPct: row.priceChange24hPct === null ? null : Number(row.priceChange24hPct),
+          lastPriceUpdateAt: row.lastPriceUpdateAt,
         }),
       }))
       .filter((entry): entry is { row: MarketRow; score: number } => entry.score !== null);

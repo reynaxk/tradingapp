@@ -59,7 +59,11 @@ export default async function TokenDetailPage({
         </div>
 
         <div className="mt-6 grid grid-cols-3 gap-3">
-          <Stat label="Market cap" value={formatCompactUsd(market.marketCapUsd)} />
+          <Stat
+            label="FDV"
+            value={formatCompactUsd(market.marketCapUsd)}
+            title="Fully diluted value — token price × total on-chain supply, not circulating market cap. See docs/MARKET_DATA.md."
+          />
           <Stat label="Volume 24h" value={formatCompactUsd(market.volume24hUsd)} />
           <Stat label="Liquidity" value={formatCompactUsd(market.liquidityUsd)} />
         </div>
@@ -91,9 +95,9 @@ export default async function TokenDetailPage({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="rounded-lg border border-line bg-surface p-4">
+    <div className="rounded-lg border border-line bg-surface p-4" title={title}>
       <div className="font-mono text-[0.65rem] uppercase tracking-wide text-ink-400">{label}</div>
       <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-ink-900">{value}</div>
     </div>

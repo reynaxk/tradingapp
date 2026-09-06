@@ -92,8 +92,9 @@ Null, not a fabricated total, when either side's price is unresolved.
 `computeFullyDilutedMarketCapUsd()`: on-chain `totalSupply()` × price. This is **FDV
 (fully diluted valuation), not circulating market cap** — Fomo has no way to know which
 tokens are locked, burned, or held by a treasury versus genuinely circulating. Labeled
-"Market cap" in the UI for familiarity, but if this distinction ever becomes
-product-relevant, it needs a real circulating-supply source, not a bigger disclaimer.
+"FDV" in the UI (token detail page) for exactly this reason, rather than "Market cap" —
+if a genuine circulating-market-cap figure ever becomes product-relevant, it needs a real
+circulating-supply source, not a relabeled FDV number.
 
 ## Volume and 24h price change
 
