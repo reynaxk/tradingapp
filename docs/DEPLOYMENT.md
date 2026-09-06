@@ -17,7 +17,12 @@ no self-managed nodes at this stage.
 2. Root Directory: `apps/web`. Vercel auto-detects the monorepo via `turbo.json` and only
    needs the app's own build command (`next build`) — no custom install command required
    as long as the project uses pnpm (Vercel detects `pnpm-lock.yaml` automatically).
-3. No environment variables are required yet (see `apps/web/.env.example`).
+3. Set `NEXT_PUBLIC_API_BASE_URL` to the deployed API's public URL (see
+   `apps/web/.env.example`) — it backs the live activity stream and follow/like mutations,
+   the one place the browser talks to the API directly (see `docs/SOCIAL.md#realtime`). It
+   defaults to `http://localhost:4000`, which is wrong in production, so this one is not
+   optional. `API_BASE_URL` (server-only, used for every other page) can be left at its
+   default only if the API is reachable at that address from Vercel's build/runtime.
 
 ## API and workers (Fly.io)
 
@@ -33,7 +38,8 @@ Set secrets per app (never commit these — see `apps/api/.env.example` and
 `apps/workers/.env.example` for the full list each one needs):
 
 ```bash
-fly secrets set -a <api-app-name> DATABASE_URL=... REDIS_URL=... CORS_ORIGIN=...
+fly secrets set -a <api-app-name> DATABASE_URL=... REDIS_URL=... CORS_ORIGIN=... \
+  JWT_SECRET=$(openssl rand -base64 32)
 fly secrets set -a <workers-app-name> DATABASE_URL=... REDIS_URL=... CHAIN_RPC_URL=... \
   CHAIN_IDENTIFIER=eip155:8453 CHAIN_NAME=Base CHAIN_NATIVE_SYMBOL=ETH
 ```
