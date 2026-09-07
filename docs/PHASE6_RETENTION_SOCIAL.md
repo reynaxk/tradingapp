@@ -330,6 +330,14 @@ with animation, sound, or a progress bar.
 - **No push notifications, email digests, or Discord/Telegram delivery for "what you
   missed"** — explicitly out of scope per the spec's own boundary list; the in-app surface
   and the existing notification center are the only delivery channels.
+- **The saved-search cap has a narrow race window under concurrent requests from the same
+  user**: `SavedSearchService#create` checks the count and inserts as two separate
+  statements, not one atomic operation, so two truly simultaneous creates from the same
+  account could both pass the check and land the user one row over
+  `MAX_SAVED_SEARCHES_PER_USER`. Accepted because the cap is a soft product limit (not a
+  security or billing boundary) and the race is self-inflicted — a user can only ever race
+  against their own other request, never another user's. A `SERIALIZABLE` transaction with
+  retry-on-conflict would close this fully if the cap ever needs to be exact.
 
 ## Explicitly out of scope (per the spec's own boundary, unchanged from Phases 1–5)
 
