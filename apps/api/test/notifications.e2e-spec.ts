@@ -57,15 +57,13 @@ async function linkVerifiedWallet(app: INestApplication, token: string) {
  * describe block keeps each instance's usage safely under that without touching the
  * production throttle values.
  */
-describe('Notifications (e2e) — follow/like triggers', () => {
+describe('Notifications (e2e) — follow notifications', () => {
   let app: INestApplication;
   const chainIdentifier = 'eip155:8453';
-  const baseAddress = '0xb00000000000000000000000000000000000b1';
-  const quoteAddress = '0xb00000000000000000000000000000000000b2';
-  const poolAddress = '0xb00000000000000000000000000000000000b3';
+  const baseAddress = '0xb00000000000000000000000000000000000a1';
+  const quoteAddress = '0xb00000000000000000000000000000000000a2';
+  const poolAddress = '0xb00000000000000000000000000000000000a3';
   let tokenMarketId: string;
-  let recipientAddress: string;
-  let swapId: string;
 
   beforeAll(async () => {
     app = await buildApp();
@@ -78,12 +76,12 @@ describe('Notifications (e2e) — follow/like triggers', () => {
     const baseToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: baseAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'NOTF', name: 'Notif Token', decimals: 18 },
+      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'NOTFA', name: 'Notif Token A', decimals: 18 },
     });
     const quoteToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: quoteAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'NOTFQ', name: 'Notif Quote', decimals: 6 },
+      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'NOTFAQ', name: 'Notif Quote A', decimals: 6 },
     });
     const market = await prisma.tokenMarket.upsert({
       where: { chainId_pairAddress: { chainId: chain.id, pairAddress: poolAddress } },
@@ -94,53 +92,36 @@ describe('Notifications (e2e) — follow/like triggers', () => {
   });
 
   afterAll(async () => {
+    // Wallet rows from linkVerifiedWallet's randomly-generated keypairs are deliberately
+    // left in place, same as trading.e2e-spec.ts's own convention — CI's Postgres is a
+    // fresh, ephemeral container per run, and random addresses can't collide with anything.
     await prisma.notification.deleteMany({ where: { tokenMarketId } });
-    if (swapId) await prisma.activityLike.deleteMany({ where: { swapId } });
-    if (recipientAddress) await prisma.follow.deleteMany({ where: { walletAddress: recipientAddress } });
     await prisma.swap.deleteMany({ where: { tokenMarketId } });
     await prisma.tokenMarket.delete({ where: { id: tokenMarketId } }).catch(() => undefined);
-    if (recipientAddress) await prisma.wallet.delete({ where: { address: recipientAddress } }).catch(() => undefined);
     await app.close();
   });
 
-  it('every mutation/list/preferences/stream endpoint requires authentication', async () => {
-    const server = app.getHttpServer();
-    const checks = [
-      request(server).get('/v1/notifications'),
-      request(server).get('/v1/notifications/unread-count'),
-      request(server).post('/v1/notifications/some-id/read'),
-      request(server).post('/v1/notifications/read-all'),
-      request(server).get('/v1/notifications/preferences'),
-      request(server).patch('/v1/notifications/preferences'),
-      request(server).post('/v1/notifications/stream-ticket'),
-    ];
-    for (const check of checks) {
-      const res = await check;
-      expect(res.status).toBe(401);
-    }
-  });
-
-  it('GET /v1/notifications/stream 401s without a valid ticket — EventSource cannot send a bearer token', async () => {
-    const res = await request(app.getHttpServer()).get('/v1/notifications/stream');
-    expect(res.status).toBe(401);
-  });
-
-  it('follow -> the followed wallet\'s owner receives a persisted, unread FOLLOW notification', async () => {
+  it('follow -> the followed wallet\'s owner receives a persisted, unread FOLLOW notification with a working deep link', async () => {
     const recipient = await issueSession(app);
-    const { address } = await linkVerifiedWallet(app, recipient.token);
-    recipientAddress = address;
+    const { address: recipientAddress } = await linkVerifiedWallet(app, recipient.token);
     const recipientAuth = { Authorization: `Bearer ${recipient.token}` };
 
+    // The follower also links a wallet — the FOLLOW notification's deep link points at the
+    // *actor's* (follower's) trader page, which only resolves once they have one. An actor
+    // with no linked wallet at all (a legitimate case — see NOTIFICATION_INCLUDE's comment
+    // in notification.mapper.ts) would correctly yield a null deepLink instead.
     const follower = await issueSession(app);
+    const { address: followerAddress } = await linkVerifiedWallet(app, follower.token);
     const followerAuth = { Authorization: `Bearer ${follower.token}` };
-    await request(app.getHttpServer()).post(`/v1/social/traders/${address}/follow`).set(followerAuth).expect(200);
+    await request(app.getHttpServer()).post(`/v1/social/traders/${recipientAddress}/follow`).set(followerAuth).expect(200);
 
     const list = await request(app.getHttpServer()).get('/v1/notifications').set(recipientAuth);
     expect(list.status).toBe(200);
     const notif = list.body.items.find((n: { type: string }) => n.type === 'FOLLOW');
     expect(notif).toBeDefined();
     expect(notif.readAt).toBeNull();
-    expect(notif.deepLink).toBeTruthy();
+    expect(notif.actor.address).toBe(followerAddress);
+    expect(notif.deepLink).toBe(`/trader/${followerAddress}`);
 
     const unread = await request(app.getHttpServer()).get('/v1/notifications/unread-count').set(recipientAuth);
     expect(unread.body.count).toBeGreaterThanOrEqual(1);
@@ -154,15 +135,19 @@ describe('Notifications (e2e) — follow/like triggers', () => {
   });
 
   it('a duplicate follow (already following) does not create a second FOLLOW notification', async () => {
-    const before = await prisma.notification.count({ where: { type: 'FOLLOW' } });
+    const recipient = await issueSession(app);
+    const { address: recipientAddress } = await linkVerifiedWallet(app, recipient.token);
     const follower = await issueSession(app);
+    const followerAuth = { Authorization: `Bearer ${follower.token}` };
+
+    await request(app.getHttpServer()).post(`/v1/social/traders/${recipientAddress}/follow`).set(followerAuth).expect(200);
+    const before = await prisma.notification.count({ where: { type: 'FOLLOW' } });
     await request(app.getHttpServer())
       .post(`/v1/social/traders/${recipientAddress}/follow`)
-      .set({ Authorization: `Bearer ${follower.token}` })
+      .set(followerAuth)
       .expect(200); // idempotent success at the follow layer too
     const after = await prisma.notification.count({ where: { type: 'FOLLOW' } });
-    // A genuinely new follower still notifies once; re-following (same follower) must not.
-    expect(after).toBeGreaterThanOrEqual(before);
+    expect(after).toBe(before); // re-following the same trader must not renotify
   });
 
   it('never self-notifies when a user follows or likes their own content', async () => {
@@ -194,7 +179,50 @@ describe('Notifications (e2e) — follow/like triggers', () => {
     expect(list.body.items.some((n: { type: string }) => n.type === 'FOLLOW' || n.type === 'LIKE')).toBe(false);
 
     await prisma.swap.delete({ where: { id: swap.id } });
-    await prisma.wallet.delete({ where: { address: ownAddress } }).catch(() => undefined);
+  });
+});
+
+describe('Notifications (e2e) — like notifications and preferences', () => {
+  let app: INestApplication;
+  const chainIdentifier = 'eip155:8453';
+  const baseAddress = '0xb00000000000000000000000000000000000b1';
+  const quoteAddress = '0xb00000000000000000000000000000000000b2';
+  const poolAddress = '0xb00000000000000000000000000000000000b3';
+  let tokenMarketId: string;
+  let swapId: string;
+
+  beforeAll(async () => {
+    app = await buildApp();
+
+    const chain = await prisma.chain.upsert({
+      where: { identifier: chainIdentifier },
+      update: {},
+      create: { identifier: chainIdentifier, name: 'Base', nativeSymbol: 'ETH', rpcConfigKey: 'CHAIN_RPC_URL' },
+    });
+    const baseToken = await prisma.token.upsert({
+      where: { chainId_contractAddress: { chainId: chain.id, contractAddress: baseAddress } },
+      update: {},
+      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'NOTFB', name: 'Notif Token B', decimals: 18 },
+    });
+    const quoteToken = await prisma.token.upsert({
+      where: { chainId_contractAddress: { chainId: chain.id, contractAddress: quoteAddress } },
+      update: {},
+      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'NOTFBQ', name: 'Notif Quote B', decimals: 6 },
+    });
+    const market = await prisma.tokenMarket.upsert({
+      where: { chainId_pairAddress: { chainId: chain.id, pairAddress: poolAddress } },
+      update: {},
+      create: { chainId: chain.id, tokenId: baseToken.id, quoteTokenId: quoteToken.id, dex: 'uniswap-v3', pairAddress: poolAddress, feeTier: 3000 },
+    });
+    tokenMarketId = market.id;
+  });
+
+  afterAll(async () => {
+    await prisma.notification.deleteMany({ where: { tokenMarketId } });
+    if (swapId) await prisma.activityLike.deleteMany({ where: { swapId } });
+    await prisma.swap.deleteMany({ where: { tokenMarketId } });
+    await prisma.tokenMarket.delete({ where: { id: tokenMarketId } }).catch(() => undefined);
+    await app.close();
   });
 
   it('like -> the trader receives a persisted LIKE notification', async () => {
@@ -231,8 +259,6 @@ describe('Notifications (e2e) — follow/like triggers', () => {
     expect(notif).toBeDefined();
     expect(notif.token.address).toBe(baseAddress);
     expect(notif.side).toBe('SELL');
-
-    await prisma.wallet.delete({ where: { address: traderAddress } }).catch(() => undefined);
   });
 
   it('a disabled preference prevents that notification type from being created', async () => {
@@ -252,8 +278,63 @@ describe('Notifications (e2e) — follow/like triggers', () => {
 
     const list = await request(app.getHttpServer()).get('/v1/notifications').set(recipientAuth);
     expect(list.body.items.some((n: { type: string }) => n.type === 'FOLLOW')).toBe(false);
+  });
 
-    await prisma.wallet.delete({ where: { address } }).catch(() => undefined);
+  it('GET /v1/notifications/preferences returns the shipped defaults for a session that never set any', async () => {
+    const session = await issueSession(app);
+    const res = await request(app.getHttpServer()).get('/v1/notifications/preferences').set({ Authorization: `Bearer ${session.token}` });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ follows: true, likes: true, followedTraderTrades: true, whaleTrades: true, trendingTokens: true });
+  });
+
+  it('POST /v1/notifications/stream-ticket issues a single-use ticket to an authenticated session', async () => {
+    const session = await issueSession(app);
+    const res = await request(app.getHttpServer()).post('/v1/notifications/stream-ticket').set({ Authorization: `Bearer ${session.token}` });
+    expect(res.status).toBe(201);
+    expect(typeof res.body.ticket).toBe('string');
+    expect(res.body.ticket.length).toBeGreaterThan(16);
+  });
+});
+
+describe('Notifications (e2e) — security', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    app = await buildApp();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('every mutation/list/preferences/stream endpoint requires authentication', async () => {
+    const server = app.getHttpServer();
+    // Fired sequentially, not via Promise.all — a concurrent burst against a freshly-built
+    // app instance can itself produce ECONNREFUSED/ECONNRESET unrelated to auth, the same
+    // ordinary listener-race lesson documented in trading.e2e-spec.ts.
+    const requests: [string, string][] = [
+      ['get', '/v1/notifications'],
+      ['get', '/v1/notifications/unread-count'],
+      ['post', '/v1/notifications/some-id/read'],
+      ['post', '/v1/notifications/read-all'],
+      ['get', '/v1/notifications/preferences'],
+      ['patch', '/v1/notifications/preferences'],
+      ['post', '/v1/notifications/stream-ticket'],
+    ];
+    for (const [method, path] of requests) {
+      const res =
+        method === 'get'
+          ? await request(server).get(path)
+          : method === 'post'
+            ? await request(server).post(path)
+            : await request(server).patch(path);
+      expect(res.status).toBe(401);
+    }
+  });
+
+  it('GET /v1/notifications/stream 401s without a valid ticket — EventSource cannot send a bearer token', async () => {
+    const res = await request(app.getHttpServer()).get('/v1/notifications/stream');
+    expect(res.status).toBe(401);
   });
 
   it("IDOR: a session cannot mark-read another user's notification, and cannot see it via list/unread-count", async () => {
@@ -283,21 +364,7 @@ describe('Notifications (e2e) — follow/like triggers', () => {
     expect(attackerList.body.items.some((n: { id: string }) => n.id === notif.id)).toBe(false);
 
     await prisma.wallet.delete({ where: { address } }).catch(() => undefined);
-  });
-
-  it('GET /v1/notifications/preferences returns the shipped defaults for a session that never set any', async () => {
-    const session = await issueSession(app);
-    const res = await request(app.getHttpServer()).get('/v1/notifications/preferences').set({ Authorization: `Bearer ${session.token}` });
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ follows: true, likes: true, followedTraderTrades: true, whaleTrades: true, trendingTokens: true });
-  });
-
-  it('POST /v1/notifications/stream-ticket issues a single-use ticket to an authenticated session', async () => {
-    const session = await issueSession(app);
-    const res = await request(app.getHttpServer()).post('/v1/notifications/stream-ticket').set({ Authorization: `Bearer ${session.token}` });
-    expect(res.status).toBe(201);
-    expect(typeof res.body.ticket).toBe('string');
-    expect(res.body.ticket.length).toBeGreaterThan(16);
+    await prisma.follow.deleteMany({ where: { walletAddress: address } });
   });
 });
 
