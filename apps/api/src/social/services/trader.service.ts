@@ -1,14 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { prisma } from '@fomo/db';
-import { normalizeEvmAddress, type TopTrader, type TraderProfile } from '@fomo/domain';
-import { toTopTrader, toTraderProfile, toTraderStats, toTraderSummary } from '../social.mapper';
+import {
+  MIN_TRADES_FOR_TRADER_RANKING,
+  normalizeEvmAddress,
+  type TopTrader,
+  type TraderProfile,
+  type TraderTokenStat,
+} from '@fomo/domain';
+import { toTopTrader, toTraderProfile, toTraderStats, toTraderSummary, toTraderTokenStat } from '../social.mapper';
 import { FollowService } from './follow.service';
-
-/** A wallet needs at least this many trades in the window to place on "Top Traders" — one
- *  huge trade shouldn't win "most active" any more than it should win trending (see
- *  TRENDING_RANKING.minTradeCount24h in packages/domain/src/social.ts for the same idea
- *  applied to markets instead of traders). */
-const MIN_TRADES_FOR_TOP_TRADERS = 2;
 
 export interface CursorPage<T> {
   items: T[];
@@ -29,31 +29,83 @@ export class TraderService {
     const wallet = await prisma.wallet.findUnique({ where: { address: normalized } });
     if (!wallet) throw new NotFoundException(`No tracked trader for wallet "${address}"`);
 
-    const [agg, buyCount, sellCount, lastSwap, followerCount, followingCount, isFollowedByMe] = await Promise.all([
-      prisma.swap.aggregate({ where: { traderAddress: normalized }, _count: { _all: true }, _sum: { volumeUsd: true } }),
-      prisma.swap.count({ where: { traderAddress: normalized, side: 'buy' } }),
-      prisma.swap.count({ where: { traderAddress: normalized, side: 'sell' } }),
-      prisma.swap.findFirst({
-        where: { traderAddress: normalized },
-        orderBy: { blockTimestamp: 'desc' },
-        select: { blockTimestamp: true },
-      }),
-      prisma.follow.count({ where: { walletAddress: normalized } }),
-      // Only ever non-zero once this wallet has been verified (Wallet.userId set — see
-      // docs/TRADING.md#wallet-ownership) and that account has made follows of its own.
-      // `userId` is a non-nullable column, so Prisma's filter type (correctly) won't accept
-      // `null` — short-circuit instead of querying when this wallet is unclaimed.
-      wallet.userId ? prisma.follow.count({ where: { userId: wallet.userId } }) : Promise.resolve(0),
-      this.follows.isFollowing(viewerUserId, normalized),
-    ]);
+    const since24h = new Date(Date.now() - 24 * 60 * 60_000);
+
+    const [agg, buyCount, sellCount, lastSwap, followerCount, followingCount, isFollowedByMe, perToken, largest, recent24h] =
+      await Promise.all([
+        prisma.swap.aggregate({ where: { traderAddress: normalized }, _count: { _all: true }, _sum: { volumeUsd: true } }),
+        prisma.swap.count({ where: { traderAddress: normalized, side: 'buy' } }),
+        prisma.swap.count({ where: { traderAddress: normalized, side: 'sell' } }),
+        prisma.swap.findFirst({
+          where: { traderAddress: normalized },
+          orderBy: { blockTimestamp: 'desc' },
+          select: { blockTimestamp: true },
+        }),
+        prisma.follow.count({ where: { walletAddress: normalized } }),
+        // Only ever non-zero once this wallet has been verified (Wallet.userId set — see
+        // docs/TRADING.md#wallet-ownership) and that account has made follows of its own.
+        // `userId` is a non-nullable column, so Prisma's filter type (correctly) won't accept
+        // `null` — short-circuit instead of querying when this wallet is unclaimed.
+        wallet.userId ? prisma.follow.count({ where: { userId: wallet.userId } }) : Promise.resolve(0),
+        this.follows.isFollowing(viewerUserId, normalized),
+        // Phase 5 — see docs/TRADER_INTELLIGENCE.md#trader-statistics. One GROUP BY for
+        // uniqueTokensTraded + concentrationIndex, never a per-token query.
+        prisma.swap.groupBy({ by: ['tokenMarketId'], where: { traderAddress: normalized }, _sum: { volumeUsd: true } }),
+        prisma.swap.aggregate({ where: { traderAddress: normalized }, _max: { volumeUsd: true } }),
+        prisma.swap.aggregate({
+          where: { traderAddress: normalized, blockTimestamp: { gte: since24h } },
+          _count: { _all: true },
+          _sum: { volumeUsd: true },
+        }),
+      ]);
 
     const stats = toTraderStats(
       wallet,
       { totalSwaps: agg._count._all, buyCount, sellCount, volumeUsd: agg._sum.volumeUsd },
       lastSwap?.blockTimestamp ?? null,
+      {
+        perTokenVolumeUsd: perToken.map((p) => (p._sum.volumeUsd === null ? 0 : Number(p._sum.volumeUsd))),
+        largestTradeUsd: largest._max.volumeUsd,
+        recent24h: { tradeCount: recent24h._count._all, volumeUsd: recent24h._sum.volumeUsd },
+      },
     );
 
     return toTraderProfile(wallet, stats, followerCount, followingCount, isFollowedByMe);
+  }
+
+  /**
+   * The tokens this trader has traded, aggregated — see docs/TRADER_INTELLIGENCE.md#trader-to-token.
+   * One GROUP BY bounded by `limit`, then one batched TokenMarket lookup for the returned
+   * ids — never a query per token. Ordered by volume (this trader's most significant
+   * tokens first), matching getTopTraders' own "rank by real measured activity" convention.
+   */
+  async getTraderTokens(address: string, limit: number): Promise<TraderTokenStat[]> {
+    const normalized = normalizeEvmAddress(address);
+    const wallet = await prisma.wallet.findUnique({ where: { address: normalized }, select: { address: true } });
+    if (!wallet) throw new NotFoundException(`No tracked trader for wallet "${address}"`);
+
+    const grouped = await prisma.swap.groupBy({
+      by: ['tokenMarketId'],
+      where: { traderAddress: normalized },
+      _count: { _all: true },
+      _sum: { volumeUsd: true },
+      _max: { blockTimestamp: true },
+      orderBy: { _sum: { volumeUsd: 'desc' } },
+      take: limit,
+    });
+    if (grouped.length === 0) return [];
+
+    const markets = await prisma.tokenMarket.findMany({
+      where: { id: { in: grouped.map((g) => g.tokenMarketId) } },
+      include: { token: true },
+    });
+    const marketById = new Map(markets.map((m) => [m.id, m]));
+
+    return grouped.flatMap((g) => {
+      const market = marketById.get(g.tokenMarketId);
+      if (!market || !g._max.blockTimestamp) return [];
+      return [toTraderTokenStat(market, g._count._all, g._sum.volumeUsd ?? 0, g._max.blockTimestamp)];
+    });
   }
 
   /** Users following this trader. Items are deliberately minimal (`userId` + when) — Phase
@@ -133,7 +185,7 @@ export class TraderService {
       FROM swaps
       WHERE trader_address IS NOT NULL AND block_timestamp >= ${since24h}
       GROUP BY trader_address
-      HAVING COUNT(*) >= ${MIN_TRADES_FOR_TOP_TRADERS}
+      HAVING COUNT(*) >= ${MIN_TRADES_FOR_TRADER_RANKING}
       ORDER BY SUM(volume_usd) DESC
       LIMIT ${limit}
     `;

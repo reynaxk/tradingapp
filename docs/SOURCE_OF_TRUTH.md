@@ -51,7 +51,14 @@ UI
 A trade's outcome is only ever true once the indexer has observed it on-chain. The API
 never marks a trade "complete" from the client's optimistic submission alone.
 
-## Owners, as of Phase 4
+## Owners, as of Phase 5
+
+Phase 5 (trader intelligence & discovery — see `docs/TRADER_INTELLIGENCE.md`) adds no new
+tables. Every trader statistic, ranking, and personalization signal is derived at read time
+from tables already listed below (`swaps`, `follows`, `activity_likes`,
+`trade_transactions`); Redis is used for the first time as a general-purpose cache (public
+discovery rankings only, explicit TTL, cache-aside) — it is never authoritative, exactly
+like every other use of Redis in this codebase (pub/sub delivery, SSE tickets).
 
 | Fact | Owner | Notes |
 | --- | --- | --- |

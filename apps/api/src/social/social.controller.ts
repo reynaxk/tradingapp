@@ -136,6 +136,16 @@ export class SocialController {
     return this.traders.getFollowing(params.address, query.cursor, query.limit);
   }
 
+  /** Phase 5 — see docs/TRADER_INTELLIGENCE.md#trader-to-token. A bounded ranking (this
+   *  trader's own most-significant tokens), not an infinite feed — no cursor, same
+   *  convention as getTopTraders/getTrending. */
+  @Get('traders/:address/tokens')
+  getTraderTokens(@Param() params: AddressParamDto, @Query('limit') limit?: string) {
+    const parsed = limit ? Number.parseInt(limit, 10) : 20;
+    const bounded = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 50) : 20;
+    return this.traders.getTraderTokens(params.address, bounded);
+  }
+
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @UseGuards(JwtAuthGuard)
   @HttpCode(200)

@@ -31,7 +31,8 @@ export type Wallet = z.infer<typeof WalletSchema>;
  * Trading statistics computed directly from indexed `swaps` — only metrics that can be
  * computed correctly from what's actually indexed. Deliberately no profit/ROI/PnL/win
  * rate: Fomo doesn't track cost basis, so any of those would be fabricated. See
- * docs/SOCIAL.md#trader-stats.
+ * docs/SOCIAL.md#trader-stats and docs/TRADER_INTELLIGENCE.md (Phase 5) for the richer
+ * fields added below and their exact formulas.
  */
 export const TraderStatsSchema = z.object({
   totalSwaps: z.number().int().min(0),
@@ -40,6 +41,30 @@ export const TraderStatsSchema = z.object({
   volumeUsd: z.number().min(0),
   firstSeenAt: z.string().datetime(),
   lastActiveAt: z.string().datetime().nullable(),
+
+  // Phase 5 — see docs/TRADER_INTELLIGENCE.md#trader-statistics for every formula. All
+  // additive/nullable so this never breaks an existing consumer of TraderStats.
+  /** Distinct token markets this wallet has traded, all-time. */
+  uniqueTokensTraded: z.number().int().min(0),
+  /** volumeUsd / totalSwaps — null (not 0) when totalSwaps is 0; an average of zero trades
+   *  is undefined, not a real zero-sized average trade. */
+  avgTradeSizeUsd: z.number().min(0).nullable(),
+  /** The single largest confirmed trade by USD value, all-time. Null when totalSwaps is 0. */
+  largestTradeUsd: z.number().min(0).nullable(),
+  /** Trailing 24h volume — a real, possibly-zero recent figure once the wallet has traded
+   *  at least once; never null just because nothing happened in the last 24h. */
+  volume24hUsd: z.number().min(0),
+  tradeCount24h: z.number().int().min(0),
+  /** buyCount / totalSwaps, in [0, 1] — 1 means buy-only, 0 means sell-only. Null when
+   *  totalSwaps is 0. */
+  buyRatio: z.number().min(0).max(1).nullable(),
+  /** Herfindahl-Hirschman-style concentration of volume across traded tokens, in (0, 1] —
+   *  1 means all volume in a single token, closer to 0 means spread across many. Null when
+   *  totalSwaps is 0. See computeConcentrationIndex in trader-intelligence.ts. */
+  concentrationIndex: z.number().min(0).max(1).nullable(),
+  /** totalSwaps / days-since-firstSeenAt (minimum 1 day) — trades per day, averaged over
+   *  the wallet's whole tracked history. Null when totalSwaps is 0. */
+  activityFrequencyPerDay: z.number().min(0).nullable(),
 });
 export type TraderStats = z.infer<typeof TraderStatsSchema>;
 

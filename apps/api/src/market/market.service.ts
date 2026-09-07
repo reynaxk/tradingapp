@@ -1,11 +1,24 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { prisma } from '@fomo/db';
-import { CandleSchema, computeDiscoveryScore, type Candle, type MarketSummary, type Timeframe } from '@fomo/domain';
+import {
+  CandleSchema,
+  computeDiscoveryScore,
+  LARGE_TRADE_USD_THRESHOLD,
+  type Candle,
+  type MarketSummary,
+  type Timeframe,
+  type TokenTraderConnection,
+} from '@fomo/domain';
+import { toSocialActivity } from '../social/social.mapper';
 import type { DiscoverQueryDto } from './dto/discover-query.dto';
 import type { SearchQueryDto } from './dto/search-query.dto';
 import { toMarketSummary, type MarketRow } from './market.mapper';
 
 const MARKET_INCLUDE = { token: true, quoteToken: true, chain: true } as const;
+const ACTIVITY_INCLUDE = { tokenMarket: { include: { token: true, quoteToken: true, chain: true } }, trader: true } as const;
+/** How many recent trades a token page's "active traders" section considers — kept small
+ *  and time-boxed (24h) so this is always a cheap, bounded query, never a full-history scan. */
+const TOKEN_TRADER_LOOKBACK_HOURS = 24;
 
 /** bucket width and lookback window per chart timeframe — see docs/MARKET_DATA.md#timeframes. */
 const TIMEFRAME_CONFIG: Record<Timeframe, { bucket: string; lookback: string }> = {
@@ -55,6 +68,80 @@ export class MarketService {
     });
     if (!row) throw new NotFoundException(`No tracked market for token address "${address}"`);
     return toMarketSummary(row);
+  }
+
+  /**
+   * Phase 5 — see docs/TRADER_INTELLIGENCE.md#token-to-trader. Three bounded queries (never
+   * a per-trader loop): the most recently active distinct traders, traders active on this
+   * token in the last 24h, and this token's own recent large trades. `uniqueTraders24h` is
+   * read straight off TokenMarket's own cached column — never recomputed here.
+   */
+  async getTokenTraders(address: string, limit: number): Promise<TokenTraderConnection> {
+    assertAddressShape(address);
+    const market = await prisma.tokenMarket.findFirst({
+      where: { token: { contractAddress: { equals: address, mode: 'insensitive' } } },
+      include: MARKET_INCLUDE,
+      orderBy: { liquidityUsd: 'desc' },
+    });
+    if (!market) throw new NotFoundException(`No tracked market for token address "${address}"`);
+
+    const since = new Date(Date.now() - TOKEN_TRADER_LOOKBACK_HOURS * 60 * 60_000);
+
+    const [recentRows, activeGrouped, largeTradeRows] = await Promise.all([
+      // distinct + orderBy gives the N most-recently-active *distinct* traders in one query.
+      prisma.swap.findMany({
+        where: { tokenMarketId: market.id, traderAddress: { not: null } },
+        orderBy: { blockTimestamp: 'desc' },
+        distinct: ['traderAddress'],
+        take: limit,
+        include: { trader: true },
+      }),
+      prisma.swap.groupBy({
+        by: ['traderAddress'],
+        where: { tokenMarketId: market.id, traderAddress: { not: null }, blockTimestamp: { gte: since } },
+        _count: { _all: true },
+        _max: { blockTimestamp: true },
+        orderBy: { _count: { traderAddress: 'desc' } },
+        take: limit,
+      }),
+      prisma.swap.findMany({
+        where: { tokenMarketId: market.id, volumeUsd: { gte: LARGE_TRADE_USD_THRESHOLD } },
+        orderBy: { blockTimestamp: 'desc' },
+        take: limit,
+        include: ACTIVITY_INCLUDE,
+      }),
+    ]);
+
+    const activeWallets =
+      activeGrouped.length > 0
+        ? await prisma.wallet.findMany({ where: { address: { in: activeGrouped.map((g) => g.traderAddress!) } } })
+        : [];
+    const walletByAddress = new Map(activeWallets.map((w) => [w.address, w]));
+
+    const largeTradeLikeCounts = await batchLikeCounts(largeTradeRows.map((r) => r.id));
+
+    return {
+      uniqueTraders24h: market.uniqueTraders24h,
+      recentTraders: recentRows.flatMap((row) =>
+        row.traderAddress
+          ? [{ address: row.traderAddress, displayName: row.trader?.displayName ?? null, avatarUrl: row.trader?.avatarUrl ?? null, lastTradeAt: row.blockTimestamp.toISOString(), tradeCount24h: null }]
+          : [],
+      ),
+      activeTraders: activeGrouped.flatMap((g) => {
+        if (!g.traderAddress || !g._max.blockTimestamp) return [];
+        const wallet = walletByAddress.get(g.traderAddress);
+        return [
+          {
+            address: g.traderAddress,
+            displayName: wallet?.displayName ?? null,
+            avatarUrl: wallet?.avatarUrl ?? null,
+            lastTradeAt: g._max.blockTimestamp.toISOString(),
+            tradeCount24h: g._count._all,
+          },
+        ];
+      }),
+      recentLargeTrades: largeTradeRows.map((row) => toSocialActivity(row, largeTradeLikeCounts.get(row.id) ?? 0, null)),
+    };
   }
 
   async getHistory(address: string, timeframe: Timeframe): Promise<Candle[]> {
@@ -151,4 +238,12 @@ function numDesc(a: { toNumber(): number } | null, b: { toNumber(): number } | n
   const an = a === null ? -Infinity : a.toNumber();
   const bn = b === null ? -Infinity : b.toNumber();
   return bn - an;
+}
+
+/** One groupBy for a bounded set of swap ids — same "batch, never per-row" shape as
+ *  ActivityService's own like-count batching. */
+async function batchLikeCounts(swapIds: string[]): Promise<Map<string, number>> {
+  if (swapIds.length === 0) return new Map();
+  const counts = await prisma.activityLike.groupBy({ by: ['swapId'], where: { swapId: { in: swapIds } }, _count: { _all: true } });
+  return new Map(counts.map((c) => [c.swapId, c._count._all]));
 }

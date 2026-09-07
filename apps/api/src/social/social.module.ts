@@ -18,10 +18,15 @@ import { SocialController } from './social.controller';
  * docs/NOTIFICATIONS.md) — a one-way dependency: NotificationsModule has no need to import
  * SocialModule back, so no circularity here (see RealtimeModule for the piece that would
  * have been circular). `RealtimeModule` backs this module's own SSE activity stream.
+ *
+ * `ActivityService` is exported so Phase 5's DiscoveryModule can reuse its paginated
+ * swap-backed feed machinery for the personalized feed (see
+ * ActivityService#getPersonalizedFeedCandidates) instead of a second implementation.
  */
 @Module({
   imports: [IdentityModule, RealtimeModule, NotificationsModule],
   controllers: [SocialController],
   providers: [ActivityService, FollowService, LikeService, TraderService, TrendingService],
+  exports: [ActivityService],
 })
 export class SocialModule {}

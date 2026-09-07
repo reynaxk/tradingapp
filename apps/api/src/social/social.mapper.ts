@@ -1,4 +1,5 @@
-import type { SocialActivity, TopTrader, TraderProfile, TraderStats } from '@fomo/domain';
+import type { SocialActivity, TopTrader, TraderProfile, TraderStats, TraderTokenStat } from '@fomo/domain';
+import { computeActivityFrequencyPerDay, computeBuyRatio, computeConcentrationIndex } from '@fomo/domain';
 import type { Prisma } from '@fomo/db';
 
 export type ActivityRow = Prisma.SwapGetPayload<{
@@ -56,18 +57,62 @@ export function toTraderSummary(wallet: WalletRow): { address: string; displayNa
   return { address: wallet.address, displayName: wallet.displayName, avatarUrl: wallet.avatarUrl };
 }
 
+/**
+ * Phase 5 — see docs/TRADER_INTELLIGENCE.md#trader-statistics for every formula. `perToken`
+ * is the trader's volume grouped by tokenMarketId (for uniqueTokensTraded/concentration);
+ * `recent24h`/`largest` are separate bounded aggregates TraderService gathers alongside the
+ * base totals — see the query comments in getProfile for why each is its own query rather
+ * than a single one Prisma can't express.
+ */
 export function toTraderStats(
   wallet: WalletRow,
   agg: { totalSwaps: number; buyCount: number; sellCount: number; volumeUsd: Prisma.Decimal | null },
   lastActiveAt: Date | null,
+  extra: {
+    perTokenVolumeUsd: number[];
+    largestTradeUsd: Prisma.Decimal | null;
+    recent24h: { tradeCount: number; volumeUsd: Prisma.Decimal | null };
+  },
+  now: Date = new Date(),
 ): TraderStats {
+  const totalSwaps = agg.totalSwaps;
+  const volumeUsd = agg.volumeUsd === null ? 0 : Number(agg.volumeUsd);
+
   return {
-    totalSwaps: agg.totalSwaps,
+    totalSwaps,
     buyCount: agg.buyCount,
     sellCount: agg.sellCount,
-    volumeUsd: agg.volumeUsd === null ? 0 : Number(agg.volumeUsd),
+    volumeUsd,
     firstSeenAt: wallet.firstSeenAt.toISOString(),
     lastActiveAt: lastActiveAt ? lastActiveAt.toISOString() : null,
+
+    uniqueTokensTraded: extra.perTokenVolumeUsd.length,
+    avgTradeSizeUsd: totalSwaps > 0 ? volumeUsd / totalSwaps : null,
+    largestTradeUsd: extra.largestTradeUsd === null ? null : Number(extra.largestTradeUsd),
+    volume24hUsd: extra.recent24h.volumeUsd === null ? 0 : Number(extra.recent24h.volumeUsd),
+    tradeCount24h: extra.recent24h.tradeCount,
+    buyRatio: computeBuyRatio(agg.buyCount, totalSwaps),
+    concentrationIndex: computeConcentrationIndex(extra.perTokenVolumeUsd),
+    activityFrequencyPerDay: computeActivityFrequencyPerDay(totalSwaps, wallet.firstSeenAt, now),
+  };
+}
+
+export function toTraderTokenStat(
+  tokenMarket: { token: { contractAddress: string; symbol: string | null; name: string | null; logoUrl: string | null } },
+  tradeCount: number,
+  volumeUsd: Prisma.Decimal | number,
+  lastActivityAt: Date,
+): TraderTokenStat {
+  return {
+    token: {
+      address: tokenMarket.token.contractAddress,
+      symbol: tokenMarket.token.symbol,
+      name: tokenMarket.token.name,
+      logoUrl: tokenMarket.token.logoUrl,
+    },
+    tradeCount,
+    volumeUsd: Number(volumeUsd),
+    lastActivityAt: lastActivityAt.toISOString(),
   };
 }
 

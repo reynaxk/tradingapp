@@ -6,10 +6,14 @@ import { MarketHeader } from '@/components/market/MarketHeader';
 import { MarketTable } from '@/components/market/MarketTable';
 import { TokenCard } from '@/components/market/TokenCard';
 import { ActivityFeedTabs } from '@/components/social/ActivityFeedTabs';
+import { ActivityCard } from '@/components/social/ActivityCard';
 import { TopTraders } from '@/components/social/TopTraders';
 import { TraderIdentity } from '@/components/social/TraderIdentity';
+import { PersonalizedSection } from '@/components/discovery/PersonalizedSection';
+import { RisingSection } from '@/components/discovery/RisingSection';
 import { fetchDiscoverMarkets } from '@/lib/market-api';
 import { fetchGlobalActivity, fetchTopTraders, fetchTraderSearch, fetchTrending } from '@/lib/social-api';
+import { fetchActiveTraders, fetchLargeTrades, fetchRising } from '@/lib/discovery-api';
 
 export const revalidate = 15;
 
@@ -20,7 +24,7 @@ export default async function DiscoverPage({
 }) {
   const search = searchParams.search?.trim() || undefined;
 
-  const [ranked, movers, byVolume, activity, trending, topTraders, traderResults] = await Promise.all([
+  const [ranked, movers, byVolume, activity, trending, topTraders, traderResults, activeTraders, largeTrades, rising] = await Promise.all([
     fetchDiscoverMarkets({ sort: 'score', limit: 20, search }),
     fetchDiscoverMarkets({ sort: 'priceChange', limit: 3, search }),
     fetchDiscoverMarkets({ sort: 'volume', limit: 3, search }),
@@ -28,6 +32,9 @@ export default async function DiscoverPage({
     fetchTrending(6),
     fetchTopTraders(4),
     search ? fetchTraderSearch(search, 5) : Promise.resolve([]),
+    fetchActiveTraders(4),
+    fetchLargeTrades(4),
+    fetchRising(6),
   ]);
 
   return (
@@ -55,6 +62,8 @@ export default async function DiscoverPage({
             </div>
           </section>
         )}
+
+        {!search && <PersonalizedSection />}
 
         {!search && (
           <section className="mb-12">
@@ -110,6 +119,55 @@ export default async function DiscoverPage({
               ) : (
                 <TopTraders traders={topTraders} />
               )}
+            </div>
+          </section>
+        )}
+
+        {!search && (
+          <section className="mb-12">
+            <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Active traders</h2>
+            <p className="mt-1 font-body text-sm text-ink-600">
+              Most 24h trades — a different ranking than Top Traders above, which is by volume. Still not a profit
+              claim.
+            </p>
+            <div className="mt-5">
+              {activeTraders.length === 0 ? (
+                <EmptyState title="No trader has cleared the activity floor yet" />
+              ) : (
+                <TopTraders traders={activeTraders} />
+              )}
+            </div>
+          </section>
+        )}
+
+        {!search && (
+          <section className="mb-12">
+            <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Large trades</h2>
+            <p className="mt-1 font-body text-sm text-ink-600">
+              Recent confirmed trades at or above the large-trade threshold, across every tracked market.
+            </p>
+            <div className="mt-5">
+              {largeTrades.length === 0 ? (
+                <EmptyState title="No large trades yet" />
+              ) : (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {largeTrades.map((item) => (
+                    <ActivityCard key={item.id} activity={item} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {!search && (
+          <section className="mb-12">
+            <h2 className="font-display text-lg font-bold tracking-tight text-ink-900">Rising</h2>
+            <p className="mt-1 font-body text-sm text-ink-600">
+              Tokens that just started trending, and traders moving well above their usual pace.
+            </p>
+            <div className="mt-5">
+              <RisingSection tokens={rising.tokens} traders={rising.traders} />
             </div>
           </section>
         )}
