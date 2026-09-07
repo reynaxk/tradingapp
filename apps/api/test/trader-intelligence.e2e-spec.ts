@@ -45,9 +45,9 @@ async function linkVerifiedWallet(app: INestApplication, token: string) {
 describe('Trader intelligence & discovery (e2e) — public reads', () => {
   let app: INestApplication;
   const chainIdentifier = 'eip155:8453';
-  const tokenA = { base: '0xc0000000000000000000000000000000000a01', quote: '0xc0000000000000000000000000000000000a02', pool: '0xc0000000000000000000000000000000000a03' };
-  const tokenB = { base: '0xc0000000000000000000000000000000000b01', quote: '0xc0000000000000000000000000000000000b02', pool: '0xc0000000000000000000000000000000000b03' };
-  const traderAddress = '0xc0000000000000000000000000000000000dEaD';
+  const tokenA = { base: '0xc000000000000000000000000000000000000a01', quote: '0xc000000000000000000000000000000000000a02', pool: '0xc000000000000000000000000000000000000a03' };
+  const tokenB = { base: '0xc000000000000000000000000000000000000b01', quote: '0xc000000000000000000000000000000000000b02', pool: '0xc000000000000000000000000000000000000b03' };
+  const traderAddress = '0xc00000000000000000000000000000000000dEaD';
   let marketAId: string;
   let marketBId: string;
   const swapIds: string[] = [];
@@ -206,9 +206,9 @@ describe('Trader intelligence & discovery (e2e) — public reads', () => {
 describe('Trader intelligence & discovery (e2e) — personalized', () => {
   let app: INestApplication;
   const chainIdentifier = 'eip155:8453';
-  const baseAddress = '0xc0000000000000000000000000000000000c01';
-  const quoteAddress = '0xc0000000000000000000000000000000000c02';
-  const poolAddress = '0xc0000000000000000000000000000000000c03';
+  const baseAddress = '0xc000000000000000000000000000000000000c01';
+  const quoteAddress = '0xc000000000000000000000000000000000000c02';
+  const poolAddress = '0xc000000000000000000000000000000000000c03';
   let tokenMarketId: string;
   const swapIds: string[] = [];
 
@@ -286,7 +286,10 @@ describe('Trader intelligence & discovery (e2e) — personalized', () => {
     const item = feed.body.items.find((i: { activity: { id: string } }) => i.activity.id === swap.id);
     expect(item).toBeDefined();
     expect(item.reasonCode).toBe('FOLLOWED_TRADER');
-    expect(item.reason).toMatch(/^Because you follow/);
+    // linkVerifiedWallet only proves ownership via signature — it never sets a displayName,
+    // so the reason correctly falls back to the generic phrasing (see feedReasonText in
+    // @fomo/domain) rather than naming a trader Fomo has no real display identity for.
+    expect(item.reason).toBe('From a trader you follow');
 
     const discovery = await request(app.getHttpServer()).get('/v1/discovery/personalized?limit=20').set(followerAuth);
     expect(discovery.status).toBe(200);
