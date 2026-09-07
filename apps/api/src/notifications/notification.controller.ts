@@ -72,9 +72,11 @@ export class NotificationController {
     return this.notifications.updatePreferences(user.id, body);
   }
 
+  // No @HttpCode override — a stream ticket is a newly created (single-use) resource, same
+  // as a session or a wallet challenge, so this keeps Nest's default 201 for POST rather
+  // than the 200 the toggle-style endpoints above use (follow/like, mark read).
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  @HttpCode(200)
   @Post('stream-ticket')
   async issueStreamTicket(@CurrentUser() user: SessionUser) {
     const ticket = await this.notifications.issueStreamTicket(user.id);
