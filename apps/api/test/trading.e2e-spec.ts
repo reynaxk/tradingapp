@@ -3,9 +3,40 @@ import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
 import { prisma } from '@fomo/db';
 import request from 'supertest';
+import { createPublicClient, http as viemHttp } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { AppModule } from '../src/app.module';
 import { createTestApp } from './test-app';
+
+const CHAIN_RPC_URL = 'https://mainnet.base.org';
+
+/**
+ * Real, already-mined, genuinely-successful Base mainnet transaction hashes — used to prove
+ * that a real successful receipt is not, by itself, enough to confirm a Fomo trade (see
+ * docs/TRADING.md#transaction-integrity). Walks back through recent blocks (this chain is
+ * busy enough that a handful of blocks always contain several successful transactions)
+ * rather than hardcoding a specific hash, so this doesn't depend on one address/tx staying
+ * reachable indefinitely or on guessing a real hash in advance.
+ */
+async function fetchRealSuccessfulTxHashes(count: number): Promise<string[]> {
+  const client = createPublicClient({ transport: viemHttp(CHAIN_RPC_URL) });
+  const latest = await client.getBlockNumber();
+  const found: string[] = [];
+  for (let offset = 5n; found.length < count && offset < 40n; offset += 1n) {
+    const block = await client.getBlock({ blockNumber: latest - offset, includeTransactions: true });
+    const candidates = block.transactions.slice(0, 10);
+    const receipts = await Promise.all(
+      candidates.map((tx) => client.getTransactionReceipt({ hash: tx.hash }).catch(() => null)),
+    );
+    for (let i = 0; i < candidates.length && found.length < count; i++) {
+      if (receipts[i]?.status === 'success') found.push(candidates[i]!.hash);
+    }
+  }
+  if (found.length < count) {
+    throw new Error(`Could not find ${count} real successful Base transactions for test fixtures (found ${found.length})`);
+  }
+  return found;
+}
 
 /**
  * Requires a reachable Postgres (DATABASE_URL) and Redis (REDIS_URL), same as
@@ -29,10 +60,12 @@ describe('Trading (e2e)', () => {
   const untrackedTokenAddress = '0x222222222222222222222222222222222222bbbb';
 
   let tokenMarketId: string;
+  let unrelatedTxHashes: string[];
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = await createTestApp(moduleRef);
+    unrelatedTxHashes = await fetchRealSuccessfulTxHashes(2);
 
     const chain = await prisma.chain.upsert({
       where: { identifier: chainIdentifier },
@@ -67,7 +100,7 @@ describe('Trading (e2e)', () => {
       },
     });
     tokenMarketId = market.id;
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await prisma.tradeTransaction.deleteMany({ where: { tokenMarketId } });
@@ -192,22 +225,10 @@ describe('Trading (e2e)', () => {
       expect(verify.status).toBe(400);
     });
 
-    it('rate-limits repeated challenge requests', async () => {
-      const { token } = await issueSession();
-      const auth = { Authorization: `Bearer ${token}` };
-      // The controller throttles this route to 10/60s (see identity.controller.ts) —
-      // requesting one more than that in quick succession must eventually 429 rather than
-      // letting a client mint unlimited nonces for an address it doesn't own.
-      const responses = await Promise.all(
-        Array.from({ length: 12 }, (_, i) =>
-          request(app.getHttpServer())
-            .post('/v1/identity/wallet/challenge')
-            .set(auth)
-            .send({ address: `0x${i.toString().padStart(2, '0')}23456789012345678901234567890123456789` }),
-        ),
-      );
-      expect(responses.some((res) => res.status === 429)).toBe(true);
-    });
+    // Challenge rate-limiting is covered by its own top-level describe block below, using
+    // an isolated app instance — see the comment there for why it can't share this file's
+    // `app` (it would burn through the same 10/60s budget every other test in this file
+    // relies on for its own linkVerifiedWallet() calls to keep succeeding).
   });
 
   describe('GET /v1/trade/quote', () => {
@@ -359,5 +380,131 @@ describe('Trading (e2e)', () => {
         .set('Authorization', `Bearer ${b.token}`);
       expect(spoofed.status).toBe(400);
     });
+  });
+
+  /**
+   * See docs/TRADING.md#transaction-integrity. These specifically prove the gaps closed in
+   * TransactionService#submitTransaction / #refreshStatus: a receipt's success alone is
+   * never enough, a stale quoteId can't be replayed, and wallet ownership is re-checked at
+   * submission rather than trusted from the quote's frozen snapshot.
+   */
+  describe('transaction integrity', () => {
+    it('rejects submitting a transaction against an expired quote', async () => {
+      const { token, userId } = await issueSession();
+      const { address } = await linkVerifiedWallet(token);
+      const quote = await seedQuote(userId, address, { expiresAt: new Date(Date.now() - 1000) });
+
+      const res = await request(app.getHttpServer())
+        .post('/v1/trade/transactions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ quoteId: quote.id, walletAddress: address, txHash: `0x${'7'.repeat(64)}` });
+
+      expect(res.status).toBe(422);
+      expect(await prisma.tradeTransaction.findUnique({ where: { quoteId: quote.id } })).toBeNull();
+    });
+
+    it('rejects submitting a transaction once the wallet has been unlinked after the quote was created', async () => {
+      const { token, userId } = await issueSession();
+      const { address } = await linkVerifiedWallet(token);
+      const quote = await seedQuote(userId, address);
+
+      await request(app.getHttpServer()).delete(`/v1/identity/wallets/${address}`).set('Authorization', `Bearer ${token}`).expect(200);
+
+      const res = await request(app.getHttpServer())
+        .post('/v1/trade/transactions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ quoteId: quote.id, walletAddress: address, txHash: `0x${'8'.repeat(64)}` });
+
+      expect(res.status).toBe(403);
+      expect(await prisma.tradeTransaction.findUnique({ where: { quoteId: quote.id } })).toBeNull();
+    });
+
+    it('rejects a real, unrelated, already-successful transaction hash at submission — it is not the trade that was reviewed', async () => {
+      const { token, userId } = await issueSession();
+      const { address } = await linkVerifiedWallet(token);
+      const quote = await seedQuote(userId, address);
+
+      const res = await request(app.getHttpServer())
+        .post('/v1/trade/transactions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ quoteId: quote.id, walletAddress: address, txHash: unrelatedTxHashes[0] });
+
+      expect(res.status).toBe(403);
+      expect(await prisma.tradeTransaction.findUnique({ where: { quoteId: quote.id } })).toBeNull();
+    }, 20_000);
+
+    it('never marks a quote CONFIRMED merely because an unrelated transaction hash has a successful receipt', async () => {
+      const { token, userId } = await issueSession();
+      const { address } = await linkVerifiedWallet(token);
+      const quote = await seedQuote(userId, address);
+
+      // Bypasses submitTransaction's own checks entirely (which would themselves reject
+      // this — see the test above) by seeding the row directly, exactly the way this file
+      // already seeds quotes: this isolates and proves refreshStatus's own independent
+      // match check, regardless of how a mismatched row could ever come to exist.
+      const seeded = await prisma.tradeTransaction.create({
+        data: {
+          userId,
+          walletAddress: address,
+          quoteId: quote.id,
+          chainId: 8453,
+          txHash: unrelatedTxHashes[1]!,
+          tokenMarketId,
+          side: quote.side,
+          inputToken: quote.inputToken,
+          outputToken: quote.outputToken,
+          inputAmount: quote.inputAmount,
+          expectedOutputAmount: quote.expectedOutputAmount,
+          platformFeeAmount: quote.platformFeeAmount,
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get(`/v1/trade/transactions/${seeded.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).not.toBe('CONFIRMED');
+      expect(res.body.status).toBe('FAILED');
+      expect(res.body.failureReason).toMatch(/does not match/i);
+    }, 20_000);
+  });
+});
+
+describe('Trading (e2e) — challenge rate limiting', () => {
+  let isolatedApp: INestApplication;
+
+  // A dedicated Nest app instance with its own in-memory throttler storage — see
+  // docs/TESTING.md. Reusing the main describe block's shared `app` here would burn
+  // through the same 10/60s budget every other test in this file depends on for its own
+  // linkVerifiedWallet() calls to keep succeeding, turning one rate-limit test into a
+  // cascade of unrelated failures throughout the rest of the suite. Production throttling
+  // itself is untouched — this only isolates the *test*, not the limit being tested.
+  beforeAll(async () => {
+    const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    isolatedApp = await createTestApp(moduleRef);
+  });
+
+  afterAll(async () => {
+    await isolatedApp.close();
+  });
+
+  it('rate-limits repeated challenge requests', async () => {
+    const sessionRes = await request(isolatedApp.getHttpServer()).post('/v1/identity/session');
+    expect(sessionRes.status).toBe(201);
+    const auth = { Authorization: `Bearer ${sessionRes.body.token as string}` };
+
+    // The controller throttles this route to 10/60s (see identity.controller.ts) —
+    // requesting one more than that in quick succession must eventually 429 rather than
+    // letting a client mint unlimited nonces for an address it doesn't own.
+    const responses = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        request(isolatedApp.getHttpServer())
+          .post('/v1/identity/wallet/challenge')
+          .set(auth)
+          .send({ address: `0x${i.toString().padStart(2, '0')}23456789012345678901234567890123456789` }),
+      ),
+    );
+    expect(responses.some((res) => res.status === 429)).toBe(true);
   });
 });
