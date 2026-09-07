@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeEvmAddress } from './wallet';
 
 /**
  * Phase 3 trading domain: quotes, fees, slippage, and the transaction lifecycle. See
@@ -98,6 +99,54 @@ export const UnsignedTransactionSchema = z.object({
   maxPriorityFeePerGas: z.string().nullable(),
 });
 export type UnsignedTransaction = z.infer<typeof UnsignedTransactionSchema>;
+
+/** Defensively parses a persisted `TradeQuote.unsignedTx` JSON blob back into a typed
+ *  `UnsignedTransaction` — `null` for anything malformed rather than trusting it blindly.
+ *  Should only ever fail for a corrupted row (this codebase is the only writer), but a
+ *  transaction-integrity check (see `transactionMatchesQuote` below) must never proceed on
+ *  an assumption it hasn't actually verified. See docs/TRADING.md#transaction-integrity. */
+export function parseUnsignedTx(json: unknown): UnsignedTransaction | null {
+  const result = UnsignedTransactionSchema.safeParse(json);
+  return result.success ? result.data : null;
+}
+
+/** The real, on-chain fields of a transaction — as read from the chain itself
+ *  (`eth_getTransactionByHash` / a receipt), never from anything a client claims. */
+export interface OnChainTransactionDetails {
+  from: string;
+  /** `null` for a contract-creation transaction — never expected for a swap, but a real
+   *  possible value, so it's typed honestly rather than coerced. */
+  to: string | null;
+  value: bigint;
+  /** Calldata, as a `0x`-prefixed hex string. */
+  data: string;
+}
+
+export interface ExpectedTransaction {
+  walletAddress: string;
+  unsignedTx: UnsignedTransaction;
+}
+
+/**
+ * The authoritative gate between "a transaction hash has a successful receipt" and "this
+ * quote is CONFIRMED" — see docs/TRADING.md#transaction-integrity. A receipt's success
+ * alone proves nothing about *which* trade happened; it only proves *some* transaction with
+ * this hash succeeded. Only a transaction whose real on-chain sender, destination, value,
+ * and calldata all match exactly what was quoted is the trade Fomo actually reviewed with
+ * the user — never an unrelated, if genuinely successful, transaction hash.
+ */
+export function transactionMatchesQuote(actual: OnChainTransactionDetails, expected: ExpectedTransaction): boolean {
+  const expectedFrom = normalizeEvmAddress(expected.walletAddress);
+  const expectedTo = normalizeEvmAddress(expected.unsignedTx.to);
+  const expectedValue = BigInt(expected.unsignedTx.value);
+  const expectedData = expected.unsignedTx.data.toLowerCase();
+
+  const actualFrom = normalizeEvmAddress(actual.from);
+  const actualTo = actual.to === null ? null : normalizeEvmAddress(actual.to);
+  const actualData = actual.data.toLowerCase();
+
+  return actualFrom === expectedFrom && actualTo === expectedTo && actual.value === expectedValue && actualData === expectedData;
+}
 
 const TradeTokenSchema = z.object({
   address: z.string(),

@@ -5,7 +5,10 @@ import {
   classifyPriceImpactBps,
   isQuoteExpired,
   isValidSlippageBps,
+  parseUnsignedTx,
   TRADING_DEFAULTS,
+  transactionMatchesQuote,
+  type UnsignedTransaction,
 } from './trading';
 
 describe('calculateFeeAmount', () => {
@@ -106,5 +109,73 @@ describe('isQuoteExpired', () => {
 
   it('treats the exact expiry instant as expired, not a boundary grace period', () => {
     expect(isQuoteExpired(now, now)).toBe(true);
+  });
+});
+
+describe('parseUnsignedTx', () => {
+  const valid = { to: '0xdead', data: '0xbeef', value: '0', gas: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
+
+  it('parses a well-formed unsignedTx blob', () => {
+    expect(parseUnsignedTx(valid)).toEqual(valid);
+  });
+
+  it('returns null for a malformed blob rather than throwing or fabricating a shape', () => {
+    expect(parseUnsignedTx({ to: '0xdead' })).toBeNull();
+    expect(parseUnsignedTx(null)).toBeNull();
+    expect(parseUnsignedTx('not-an-object')).toBeNull();
+    expect(parseUnsignedTx(undefined)).toBeNull();
+  });
+});
+
+describe('transactionMatchesQuote', () => {
+  const wallet = '0x1234567890123456789012345678901234567890';
+  const unsignedTx: UnsignedTransaction = {
+    to: '0xAbCdEf0000000000000000000000000000000001',
+    data: '0xDEADBEEF',
+    value: '1000',
+    gas: null,
+    maxFeePerGas: null,
+    maxPriorityFeePerGas: null,
+  };
+  const expected = { walletAddress: wallet, unsignedTx };
+
+  it('matches when sender, destination, value, and calldata are all exactly what was quoted', () => {
+    expect(
+      transactionMatchesQuote({ from: wallet, to: unsignedTx.to, value: 1000n, data: unsignedTx.data }, expected),
+    ).toBe(true);
+  });
+
+  it('matches case-insensitively for addresses and calldata (real RPC responses vary in casing)', () => {
+    expect(
+      transactionMatchesQuote(
+        { from: wallet.toUpperCase(), to: unsignedTx.to.toLowerCase(), value: 1000n, data: unsignedTx.data.toLowerCase() },
+        expected,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a transaction sent from a different wallet — an unrelated hash, even a successful one', () => {
+    const otherWallet = '0x9999999999999999999999999999999999999a';
+    expect(transactionMatchesQuote({ from: otherWallet, to: unsignedTx.to, value: 1000n, data: unsignedTx.data }, expected)).toBe(
+      false,
+    );
+  });
+
+  it('rejects a transaction sent to a different destination', () => {
+    expect(
+      transactionMatchesQuote({ from: wallet, to: '0x0000000000000000000000000000000000dEaD', value: 1000n, data: unsignedTx.data }, expected),
+    ).toBe(false);
+  });
+
+  it('rejects a transaction with a different value', () => {
+    expect(transactionMatchesQuote({ from: wallet, to: unsignedTx.to, value: 999n, data: unsignedTx.data }, expected)).toBe(false);
+  });
+
+  it('rejects a transaction with different calldata', () => {
+    expect(transactionMatchesQuote({ from: wallet, to: unsignedTx.to, value: 1000n, data: '0x00' }, expected)).toBe(false);
+  });
+
+  it('rejects a contract-creation transaction (a null `to`) against any real expected destination', () => {
+    expect(transactionMatchesQuote({ from: wallet, to: null, value: 1000n, data: unsignedTx.data }, expected)).toBe(false);
   });
 });

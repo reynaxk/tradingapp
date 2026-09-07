@@ -20,4 +20,9 @@ describe('EvmChainDataProvider', () => {
       provider.getTokenMetadata('0x1234567890123456789012345678901234567890'),
     ).resolves.toEqual({ symbol: null, name: null, decimals: null });
   });
+
+  it('returns null instead of fabricating transaction details when the RPC is unreachable', async () => {
+    const provider = new EvmChainDataProvider({ chain, rpcUrl: 'http://127.0.0.1:0' });
+    await expect(provider.getTransactionDetails(`0x${'1'.repeat(64)}`)).resolves.toBeNull();
+  });
 });

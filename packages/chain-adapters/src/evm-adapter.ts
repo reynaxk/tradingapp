@@ -46,6 +46,23 @@ export class EvmChainDataProvider implements ChainDataProvider {
     }
   }
 
+  /**
+   * The real, on-chain fields of a transaction (sender, destination, value, calldata) —
+   * not just its receipt status. See docs/TRADING.md#transaction-integrity: a receipt only
+   * proves *some* transaction with this hash succeeded, never that it's the specific trade
+   * a quote described. `null` for "not found" (not yet propagated to this RPC, or genuinely
+   * doesn't exist on this chain) — never fabricated, and callers must treat that as
+   * inconclusive, not as a pass.
+   */
+  async getTransactionDetails(hash: string): Promise<{ from: string; to: string | null; value: bigint; data: string } | null> {
+    try {
+      const tx = await this.client.getTransaction({ hash: hash as `0x${string}` });
+      return { from: tx.from, to: tx.to ?? null, value: tx.value, data: tx.input };
+    } catch {
+      return null;
+    }
+  }
+
   async getTokenMetadata(contractAddress: string): Promise<TokenMetadata> {
     const address = contractAddress as `0x${string}`;
     const [symbol, name, decimals] = await Promise.allSettled([
