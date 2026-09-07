@@ -7,7 +7,14 @@ import { z } from 'zod';
  * types), sharing this module so both agree on dedupe keys, deep links, and thresholds.
  */
 
-export const NotificationTypeSchema = z.enum(['FOLLOW', 'LIKE', 'FOLLOWED_TRADER_TRADE', 'WHALE_TRADE', 'TRENDING_TOKEN']);
+export const NotificationTypeSchema = z.enum([
+  'FOLLOW',
+  'LIKE',
+  'FOLLOWED_TRADER_TRADE',
+  'WHALE_TRADE',
+  'TRENDING_TOKEN',
+  'WATCHED_TOKEN_ACTIVITY',
+]);
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
 /**
@@ -30,6 +37,7 @@ export const NOTIFICATION_DEFAULTS = {
     followedTraderTrades: true,
     whaleTrades: true,
     trendingTokens: true,
+    watchedTokenActivity: true,
   },
 } as const;
 
@@ -39,17 +47,22 @@ export const NotificationPreferencesSchema = z.object({
   followedTraderTrades: z.boolean(),
   whaleTrades: z.boolean(),
   trendingTokens: z.boolean(),
+  watchedTokenActivity: z.boolean(),
 });
 export type NotificationPreferences = z.infer<typeof NotificationPreferencesSchema>;
 
 /** Which preference gates a given notification type — the single place that mapping is
  *  defined, so a controller/worker never hardcodes "whaleTrades gates WHALE_TRADE" itself. */
-export const NOTIFICATION_PREFERENCE_FIELD: Record<NotificationType, keyof NotificationPreferences> = {
+export const NOTIFICATION_PREFERENCE_FIELD: Record<
+  NotificationType,
+  keyof NotificationPreferences
+> = {
   FOLLOW: 'follows',
   LIKE: 'likes',
   FOLLOWED_TRADER_TRADE: 'followedTraderTrades',
   WHALE_TRADE: 'whaleTrades',
   TRENDING_TOKEN: 'trendingTokens',
+  WATCHED_TOKEN_ACTIVITY: 'watchedTokenActivity',
 };
 
 /**
@@ -71,6 +84,12 @@ export function followedTraderTradeDedupeKey(swapId: string): string {
   return `swap:${swapId}`;
 }
 export function whaleTradeDedupeKey(swapId: string): string {
+  return `swap:${swapId}`;
+}
+/** Same shape as `whaleTradeDedupeKey` — the (userId, type, dedupeKey) unique constraint
+ *  already keeps this distinct per recipient and per notification type, so a plain
+ *  swap-keyed string is enough; see NotificationFanoutService#notifyWatchedTokenActivity. */
+export function watchedTokenActivityDedupeKey(swapId: string): string {
   return `swap:${swapId}`;
 }
 /** `transitionAtIso` ties this key to one specific "entered trending" event — see
@@ -97,6 +116,7 @@ export function notificationDeepLink(
     case 'FOLLOWED_TRADER_TRADE':
     case 'WHALE_TRADE':
     case 'TRENDING_TOKEN':
+    case 'WATCHED_TOKEN_ACTIVITY':
       return ctx.tokenAddress ? `/market/${ctx.tokenAddress}` : null;
   }
 }

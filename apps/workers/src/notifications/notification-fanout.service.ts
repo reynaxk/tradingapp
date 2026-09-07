@@ -5,6 +5,7 @@ import {
   NOTIFICATION_DEFAULTS,
   NOTIFICATION_REALTIME_CHANNEL,
   trendingTokenDedupeKey,
+  watchedTokenActivityDedupeKey,
   whaleTradeDedupeKey,
   type NotificationPing,
   type NotificationPreferences,
@@ -50,13 +51,21 @@ export class NotificationFanoutService {
   /** Notifies followers of a trader when that trader's swap lands — one notification per
    *  (follower, swap) pair, gated by each follower's own `followedTraderTrades` preference. */
   async notifyFollowedTraderTrades(swaps: InsertedSwap[]): Promise<void> {
-    const traded = swaps.filter((s): s is InsertedSwap & { traderAddress: string } => s.traderAddress !== null);
+    const traded = swaps.filter(
+      (s): s is InsertedSwap & { traderAddress: string } => s.traderAddress !== null,
+    );
     if (traded.length === 0) return;
 
     const traderAddresses = Array.from(new Set(traded.map((s) => s.traderAddress)));
     const [follows, traderWallets] = await Promise.all([
-      prisma.follow.findMany({ where: { walletAddress: { in: traderAddresses } }, select: { userId: true, walletAddress: true } }),
-      prisma.wallet.findMany({ where: { address: { in: traderAddresses } }, select: { address: true, userId: true } }),
+      prisma.follow.findMany({
+        where: { walletAddress: { in: traderAddresses } },
+        select: { userId: true, walletAddress: true },
+      }),
+      prisma.wallet.findMany({
+        where: { address: { in: traderAddresses } },
+        select: { address: true, userId: true },
+      }),
     ]);
     if (follows.length === 0) return;
 
@@ -77,7 +86,11 @@ export class NotificationFanoutService {
       for (const userId of followersByTrader.get(swap.traderAddress) ?? []) {
         if (userId === selfUserId) continue; // never self-notify
         if (!this.preference(prefsByUser, userId, 'followedTraderTrades')) continue;
-        candidates.push({ userId, dedupeKey: followedTraderTradeDedupeKey(swap.id), swapId: swap.id });
+        candidates.push({
+          userId,
+          dedupeKey: followedTraderTradeDedupeKey(swap.id),
+          swapId: swap.id,
+        });
       }
     }
     if (candidates.length === 0) return;
@@ -99,13 +112,21 @@ export class NotificationFanoutService {
     if (whales.length === 0) return;
 
     const tokenMarketIds = Array.from(new Set(whales.map((s) => s.tokenMarketId)));
-    const cooldownSince = new Date(Date.now() - NOTIFICATION_DEFAULTS.whaleTradeCooldownMinutes * 60_000);
+    const cooldownSince = new Date(
+      Date.now() - NOTIFICATION_DEFAULTS.whaleTradeCooldownMinutes * 60_000,
+    );
     const onCooldownRows = await prisma.notification.findMany({
-      where: { type: 'WHALE_TRADE', tokenMarketId: { in: tokenMarketIds }, createdAt: { gte: cooldownSince } },
+      where: {
+        type: 'WHALE_TRADE',
+        tokenMarketId: { in: tokenMarketIds },
+        createdAt: { gte: cooldownSince },
+      },
       select: { tokenMarketId: true },
       distinct: ['tokenMarketId'],
     });
-    const onCooldown = new Set(onCooldownRows.map((r) => r.tokenMarketId).filter((id): id is string => id !== null));
+    const onCooldown = new Set(
+      onCooldownRows.map((r) => r.tokenMarketId).filter((id): id is string => id !== null),
+    );
     const eligible = whales.filter((s) => !onCooldown.has(s.tokenMarketId));
     if (eligible.length === 0) return;
 
@@ -124,16 +145,26 @@ export class NotificationFanoutService {
       recipientsByToken.set(t.tokenMarketId, list);
     }
 
-    const traderAddresses = Array.from(new Set(eligible.map((s) => s.traderAddress).filter((a): a is string => a !== null)));
+    const traderAddresses = Array.from(
+      new Set(eligible.map((s) => s.traderAddress).filter((a): a is string => a !== null)),
+    );
     const traderWallets = traderAddresses.length
-      ? await prisma.wallet.findMany({ where: { address: { in: traderAddresses } }, select: { address: true, userId: true } })
+      ? await prisma.wallet.findMany({
+          where: { address: { in: traderAddresses } },
+          select: { address: true, userId: true },
+        })
       : [];
     const traderUserId = new Map(traderWallets.map((w) => [w.address, w.userId]));
 
     const recipientUserIds = Array.from(new Set(priorTraders.map((t) => t.userId)));
     const prefsByUser = await this.batchPreferences(recipientUserIds);
 
-    const candidates: { userId: string; dedupeKey: string; swapId: string; tokenMarketId: string }[] = [];
+    const candidates: {
+      userId: string;
+      dedupeKey: string;
+      swapId: string;
+      tokenMarketId: string;
+    }[] = [];
     const notifiedTokenThisTick = new Set<string>();
     for (const swap of eligible) {
       if (notifiedTokenThisTick.has(swap.tokenMarketId)) continue;
@@ -145,7 +176,12 @@ export class NotificationFanoutService {
       for (const userId of recipients) {
         if (userId === selfUserId) continue; // never self-notify
         if (!this.preference(prefsByUser, userId, 'whaleTrades')) continue;
-        candidates.push({ userId, dedupeKey: whaleTradeDedupeKey(swap.id), swapId: swap.id, tokenMarketId: swap.tokenMarketId });
+        candidates.push({
+          userId,
+          dedupeKey: whaleTradeDedupeKey(swap.id),
+          swapId: swap.id,
+          tokenMarketId: swap.tokenMarketId,
+        });
         notifiedAny = true;
       }
       if (notifiedAny) notifiedTokenThisTick.add(swap.tokenMarketId);
@@ -153,6 +189,116 @@ export class NotificationFanoutService {
     if (candidates.length === 0) return;
 
     await this.bulkCreate('WHALE_TRADE', candidates);
+  }
+
+  /**
+   * Notifies users watching a token (see TokenWatch, docs/PHASE6_RETENTION_SOCIAL.md#notification-integration)
+   * when a large trade lands in it. Deliberately reuses WHALE_TRADE's own "what counts as
+   * meaningful" threshold (`whaleTradeUsdThreshold`) and cooldown
+   * (`NOTIFICATION_DEFAULTS.whaleTradeCooldownMinutes`) rather than a second definition, and
+   * excludes every watcher who already has real trading history in the token — that cohort
+   * is WHALE_TRADE's own recipient set (see notifyWhaleTrades above), so the two notification
+   * types' audiences are disjoint by construction and a user can never get both for the same
+   * swap. Bounded exactly like notifyWhaleTrades: one cooldown check, one watcher query, one
+   * prior-trader query, one preference batch — never a query per watcher or per token.
+   */
+  async notifyWatchedTokenActivity(swaps: InsertedSwap[]): Promise<void> {
+    const large = swaps.filter((s) => s.amountUsd >= this.whaleTradeUsdThreshold);
+    if (large.length === 0) return;
+
+    const tokenMarketIds = Array.from(new Set(large.map((s) => s.tokenMarketId)));
+    const cooldownSince = new Date(
+      Date.now() - NOTIFICATION_DEFAULTS.whaleTradeCooldownMinutes * 60_000,
+    );
+    const onCooldownRows = await prisma.notification.findMany({
+      where: {
+        type: 'WATCHED_TOKEN_ACTIVITY',
+        tokenMarketId: { in: tokenMarketIds },
+        createdAt: { gte: cooldownSince },
+      },
+      select: { tokenMarketId: true },
+      distinct: ['tokenMarketId'],
+    });
+    const onCooldown = new Set(
+      onCooldownRows.map((r) => r.tokenMarketId).filter((id): id is string => id !== null),
+    );
+    const eligible = large.filter((s) => !onCooldown.has(s.tokenMarketId));
+    if (eligible.length === 0) return;
+
+    const eligibleTokenMarketIds = Array.from(new Set(eligible.map((s) => s.tokenMarketId)));
+    const [watches, priorTraders] = await Promise.all([
+      prisma.tokenWatch.findMany({
+        where: { tokenMarketId: { in: eligibleTokenMarketIds } },
+        select: { userId: true, tokenMarketId: true },
+      }),
+      prisma.tradeTransaction.findMany({
+        where: { tokenMarketId: { in: eligibleTokenMarketIds }, status: 'CONFIRMED' },
+        select: { userId: true, tokenMarketId: true },
+        distinct: ['userId', 'tokenMarketId'],
+      }),
+    ]);
+    if (watches.length === 0) return;
+
+    const priorTradersByToken = new Map<string, Set<string>>();
+    for (const t of priorTraders) {
+      const set = priorTradersByToken.get(t.tokenMarketId) ?? new Set<string>();
+      set.add(t.userId);
+      priorTradersByToken.set(t.tokenMarketId, set);
+    }
+
+    const watchersByToken = new Map<string, string[]>();
+    for (const w of watches) {
+      if (priorTradersByToken.get(w.tokenMarketId)?.has(w.userId)) continue; // already WHALE_TRADE's audience
+      const list = watchersByToken.get(w.tokenMarketId) ?? [];
+      list.push(w.userId);
+      watchersByToken.set(w.tokenMarketId, list);
+    }
+    if (watchersByToken.size === 0) return;
+
+    const traderAddresses = Array.from(
+      new Set(eligible.map((s) => s.traderAddress).filter((a): a is string => a !== null)),
+    );
+    const traderWallets = traderAddresses.length
+      ? await prisma.wallet.findMany({
+          where: { address: { in: traderAddresses } },
+          select: { address: true, userId: true },
+        })
+      : [];
+    const traderUserId = new Map(traderWallets.map((w) => [w.address, w.userId]));
+
+    const recipientUserIds = Array.from(new Set(Array.from(watchersByToken.values()).flat()));
+    const prefsByUser = await this.batchPreferences(recipientUserIds);
+
+    const candidates: {
+      userId: string;
+      dedupeKey: string;
+      swapId: string;
+      tokenMarketId: string;
+    }[] = [];
+    const notifiedTokenThisTick = new Set<string>();
+    for (const swap of eligible) {
+      if (notifiedTokenThisTick.has(swap.tokenMarketId)) continue;
+      const recipients = watchersByToken.get(swap.tokenMarketId) ?? [];
+      if (recipients.length === 0) continue;
+
+      const selfUserId = swap.traderAddress ? (traderUserId.get(swap.traderAddress) ?? null) : null;
+      let notifiedAny = false;
+      for (const userId of recipients) {
+        if (userId === selfUserId) continue; // never self-notify
+        if (!this.preference(prefsByUser, userId, 'watchedTokenActivity')) continue;
+        candidates.push({
+          userId,
+          dedupeKey: watchedTokenActivityDedupeKey(swap.id),
+          swapId: swap.id,
+          tokenMarketId: swap.tokenMarketId,
+        });
+        notifiedAny = true;
+      }
+      if (notifiedAny) notifiedTokenThisTick.add(swap.tokenMarketId);
+    }
+    if (candidates.length === 0) return;
+
+    await this.bulkCreate('WATCHED_TOKEN_ACTIVITY', candidates);
   }
 
   /**
@@ -178,15 +324,23 @@ export class NotificationFanoutService {
     const wasTrending = state?.isTrending ?? false;
 
     if (isTrendingNow === wasTrending) {
-      if (!state) await prisma.tokenTrendingState.create({ data: { tokenMarketId, isTrending: false } });
+      if (!state)
+        await prisma.tokenTrendingState.create({ data: { tokenMarketId, isTrending: false } });
       return;
     }
 
     const now = new Date();
     await prisma.tokenTrendingState.upsert({
       where: { tokenMarketId },
-      create: { tokenMarketId, isTrending: isTrendingNow, becameTrendingAt: isTrendingNow ? now : null },
-      update: { isTrending: isTrendingNow, becameTrendingAt: isTrendingNow ? now : (state?.becameTrendingAt ?? null) },
+      create: {
+        tokenMarketId,
+        isTrending: isTrendingNow,
+        becameTrendingAt: isTrendingNow ? now : null,
+      },
+      update: {
+        isTrending: isTrendingNow,
+        becameTrendingAt: isTrendingNow ? now : (state?.becameTrendingAt ?? null),
+      },
     });
 
     if (!isTrendingNow) return; // exiting trending never notifies, only entering does
@@ -199,7 +353,12 @@ export class NotificationFanoutService {
     // docs/NOTIFICATIONS.md#trending-tokens for the tradeoff this implies at very large
     // user counts.
     const enabledUsers = await prisma.user.findMany({
-      where: { OR: [{ notificationPreference: null }, { notificationPreference: { trendingTokens: true } }] },
+      where: {
+        OR: [
+          { notificationPreference: null },
+          { notificationPreference: { trendingTokens: true } },
+        ],
+      },
       select: { id: true },
     });
     if (enabledUsers.length === 0) return;
@@ -221,7 +380,9 @@ export class NotificationFanoutService {
 
   private async batchPreferences(userIds: string[]): Promise<Map<string, NotificationPreferences>> {
     if (userIds.length === 0) return new Map();
-    const rows = await prisma.notificationPreference.findMany({ where: { userId: { in: userIds } } });
+    const rows = await prisma.notificationPreference.findMany({
+      where: { userId: { in: userIds } },
+    });
     return new Map(
       rows.map((row) => [
         row.userId,
@@ -231,6 +392,7 @@ export class NotificationFanoutService {
           followedTraderTrades: row.followedTraderTrades,
           whaleTrades: row.whaleTrades,
           trendingTokens: row.trendingTokens,
+          watchedTokenActivity: row.watchedTokenActivity,
         },
       ]),
     );
@@ -249,10 +411,19 @@ export class NotificationFanoutService {
     candidates: { userId: string; dedupeKey: string; swapId?: string; tokenMarketId?: string }[],
   ): Promise<void> {
     const result = await prisma.notification.createMany({
-      data: candidates.map((c) => ({ userId: c.userId, type, dedupeKey: c.dedupeKey, swapId: c.swapId, tokenMarketId: c.tokenMarketId })),
+      data: candidates.map((c) => ({
+        userId: c.userId,
+        type,
+        dedupeKey: c.dedupeKey,
+        swapId: c.swapId,
+        tokenMarketId: c.tokenMarketId,
+      })),
       skipDuplicates: true,
     });
-    this.logger.info({ type, attempted: candidates.length, created: result.count }, 'Notification fan-out complete');
+    this.logger.info(
+      { type, attempted: candidates.length, created: result.count },
+      'Notification fan-out complete',
+    );
     if (result.count === 0) return;
 
     const created = await prisma.notification.findMany({
@@ -260,7 +431,12 @@ export class NotificationFanoutService {
       select: { id: true, userId: true, type: true, createdAt: true },
     });
     for (const row of created) {
-      await this.publish({ userId: row.userId, notificationId: row.id, type: row.type, atIso: row.createdAt.toISOString() });
+      await this.publish({
+        userId: row.userId,
+        notificationId: row.id,
+        type: row.type,
+        atIso: row.createdAt.toISOString(),
+      });
     }
   }
 

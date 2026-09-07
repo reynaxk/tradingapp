@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { TradeButton } from '@/components/trading/TradeButton';
 import { formatCompactUsd, formatPrice, formatRelativeTime, truncateAddress } from '@/lib/format';
 import { LikeButton } from './LikeButton';
+import { ShareButton } from './ShareButton';
 import { TraderIdentity } from './TraderIdentity';
 
 /**
@@ -50,7 +51,12 @@ export function ActivityCard({ activity }: { activity: SocialActivity }) {
       </div>
 
       <div className="flex items-baseline gap-2">
-        <span className={cn('font-mono text-xs font-semibold uppercase tracking-wide', isBuy ? 'text-up' : 'text-down')}>
+        <span
+          className={cn(
+            'font-mono text-xs font-semibold uppercase tracking-wide',
+            isBuy ? 'text-up' : 'text-down',
+          )}
+        >
           {isBuy ? 'Bought' : 'Sold'}
         </span>
         <span className="font-display text-lg font-bold tabular-nums text-ink-900">
@@ -90,7 +96,16 @@ export function ActivityCard({ activity }: { activity: SocialActivity }) {
               quoteTokenDecimals={activity.token.quoteDecimals}
             />
           )}
-          <LikeButton activityId={activity.id} initialLikes={activity.social.likes} initialLikedByMe={activity.social.likedByMe} />
+          <LikeButton
+            activityId={activity.id}
+            initialLikes={activity.social.likes}
+            initialLikedByMe={activity.social.likedByMe}
+          />
+          <ShareButton
+            compact
+            title={`${isBuy ? 'Bought' : 'Sold'} ${formatCompactUsd(activity.amountUsd)} of ${activity.token.symbol ?? truncateAddress(activity.token.address)} on Fomo`}
+            path={`/market/${activity.token.address}`}
+          />
         </div>
       </div>
     </Surface>

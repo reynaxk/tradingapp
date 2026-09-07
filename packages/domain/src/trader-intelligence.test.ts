@@ -115,18 +115,27 @@ describe('isRisingTrader', () => {
 
   it('is false below the absolute minimum trade-count floor, no matter the historical rate', () => {
     expect(
-      isRisingTrader({ tradeCount24h: RISING_TRADER_CONFIG.minTradeCount24h - 1, totalSwaps: 1, firstSeenAt: firstSeen, now }),
+      isRisingTrader({
+        tradeCount24h: RISING_TRADER_CONFIG.minTradeCount24h - 1,
+        totalSwaps: 1,
+        firstSeenAt: firstSeen,
+        now,
+      }),
     ).toBe(false);
   });
 
   it('is false when today merely matches the historical average', () => {
     // totalSwaps=10 over 10 days -> 1/day baseline; today's 3 is below the 2x multiplier bar (2/day) — wait 3 >= 2, so bump totalSwaps.
-    expect(isRisingTrader({ tradeCount24h: 4, totalSwaps: 40, firstSeenAt: firstSeen, now })).toBe(false); // baseline 4/day, needs 8+
+    expect(isRisingTrader({ tradeCount24h: 4, totalSwaps: 40, firstSeenAt: firstSeen, now })).toBe(
+      false,
+    ); // baseline 4/day, needs 8+
   });
 
   it('is true when today clears both the floor and the multiplier over the historical baseline', () => {
     // totalSwaps=10 over 10 days -> baseline 1/day; today's 3 clears both minTradeCount24h and 2x baseline.
-    expect(isRisingTrader({ tradeCount24h: 3, totalSwaps: 10, firstSeenAt: firstSeen, now })).toBe(true);
+    expect(isRisingTrader({ tradeCount24h: 3, totalSwaps: 10, firstSeenAt: firstSeen, now })).toBe(
+      true,
+    );
   });
 
   it('is false for a wallet with no trading history at all', () => {
@@ -135,7 +144,14 @@ describe('isRisingTrader', () => {
 });
 
 describe('computePersonalizationScore', () => {
-  const noSignals = { marketActivityScore: 0, followedTraderLabel: null, viewerHasTraded: false, viewerLikeCount: 0, hoursSinceRelevantActivity: null };
+  const noSignals = {
+    marketActivityScore: 0,
+    followedTraderLabel: null,
+    viewerHasTraded: false,
+    viewerLikeCount: 0,
+    hoursSinceRelevantActivity: null,
+    isWatched: false,
+  };
 
   it('is exactly 0 when every signal is absent', () => {
     expect(computePersonalizationScore(noSignals)).toBe(0);
@@ -157,7 +173,8 @@ describe('computePersonalizationScore', () => {
   });
 
   it('engagement grows with like count but stays log-scaled (diminishing marginal returns)', () => {
-    const score = (likes: number) => computePersonalizationScore({ ...noSignals, viewerLikeCount: likes });
+    const score = (likes: number) =>
+      computePersonalizationScore({ ...noSignals, viewerLikeCount: likes });
     expect(score(10)).toBeGreaterThan(score(1));
     // Equal-sized steps (+1 like) at different starting points — a log curve's marginal
     // gain shrinks as the input grows, unlike a linear score where every +1 like would add
@@ -169,8 +186,14 @@ describe('computePersonalizationScore', () => {
 
   it('recency contributes its full weight at time zero and decays to 0 at the window edge', () => {
     const atZero = computePersonalizationScore({ ...noSignals, hoursSinceRelevantActivity: 0 });
-    const atEdge = computePersonalizationScore({ ...noSignals, hoursSinceRelevantActivity: RECENCY_WINDOW_HOURS });
-    const pastEdge = computePersonalizationScore({ ...noSignals, hoursSinceRelevantActivity: RECENCY_WINDOW_HOURS * 2 });
+    const atEdge = computePersonalizationScore({
+      ...noSignals,
+      hoursSinceRelevantActivity: RECENCY_WINDOW_HOURS,
+    });
+    const pastEdge = computePersonalizationScore({
+      ...noSignals,
+      hoursSinceRelevantActivity: RECENCY_WINDOW_HOURS * 2,
+    });
     expect(atZero).toBeCloseTo(PERSONALIZATION_WEIGHTS.recency, 10);
     expect(atEdge).toBeCloseTo(0, 10);
     expect(pastEdge).toBeGreaterThanOrEqual(0); // never negative past the window
@@ -183,30 +206,75 @@ describe('computePersonalizationScore', () => {
       viewerHasTraded: true,
       viewerLikeCount: 0,
       hoursSinceRelevantActivity: null,
+      isWatched: false,
     });
-    const expected = PERSONALIZATION_WEIGHTS.marketActivity * 1 + PERSONALIZATION_WEIGHTS.followedTrader + PERSONALIZATION_WEIGHTS.tradingInterest;
+    const expected =
+      PERSONALIZATION_WEIGHTS.marketActivity * 1 +
+      PERSONALIZATION_WEIGHTS.followedTrader +
+      PERSONALIZATION_WEIGHTS.tradingInterest;
     expect(combined).toBeCloseTo(expected, 10);
+  });
+
+  it('adds exactly the watchlist weight when the token is watched, unchanged otherwise', () => {
+    const withWatch = computePersonalizationScore({ ...noSignals, isWatched: true });
+    expect(withWatch).toBeCloseTo(PERSONALIZATION_WEIGHTS.watchlist, 10);
+    expect(computePersonalizationScore(noSignals)).toBe(0);
+  });
+
+  it('a single watched token cannot outrank a token both objectively active and followed-trader-relevant', () => {
+    const watchedOnly = computePersonalizationScore({ ...noSignals, isWatched: true });
+    const strongerSignals = computePersonalizationScore({
+      ...noSignals,
+      marketActivityScore: 1,
+      followedTraderLabel: 'Alex',
+    });
+    expect(watchedOnly).toBeLessThan(strongerSignals);
   });
 });
 
 describe('buildPersonalizationReasons', () => {
-  const noSignals = { marketActivityScore: 0, followedTraderLabel: null, viewerHasTraded: false, viewerLikeCount: 0, hoursSinceRelevantActivity: null };
+  const noSignals = {
+    marketActivityScore: 0,
+    followedTraderLabel: null,
+    viewerHasTraded: false,
+    viewerLikeCount: 0,
+    hoursSinceRelevantActivity: null,
+    isWatched: false,
+  };
 
   it('falls back to an objective reason when no personal signal fired', () => {
     expect(buildPersonalizationReasons(noSignals)).toEqual(['Active on the market']);
   });
 
   it('names the specific followed trader', () => {
-    expect(buildPersonalizationReasons({ ...noSignals, followedTraderLabel: 'Alex' })).toContain('Alex traded this recently');
+    expect(buildPersonalizationReasons({ ...noSignals, followedTraderLabel: 'Alex' })).toContain(
+      'Alex traded this recently',
+    );
   });
 
   it('includes every fired signal, not just the first', () => {
-    const reasons = buildPersonalizationReasons({ ...noSignals, followedTraderLabel: 'Alex', viewerHasTraded: true, viewerLikeCount: 2 });
+    const reasons = buildPersonalizationReasons({
+      ...noSignals,
+      followedTraderLabel: 'Alex',
+      viewerHasTraded: true,
+      viewerLikeCount: 2,
+    });
     expect(reasons).toHaveLength(3);
   });
 
+  it('names the watchlist signal when the token is watched', () => {
+    expect(buildPersonalizationReasons({ ...noSignals, isWatched: true })).toContain(
+      "You're watching this token",
+    );
+  });
+
   it('never emits an unexplained label like "AI picked" or "smart money"', () => {
-    const allPossible = buildPersonalizationReasons({ ...noSignals, followedTraderLabel: 'Alex', viewerHasTraded: true, viewerLikeCount: 5 });
+    const allPossible = buildPersonalizationReasons({
+      ...noSignals,
+      followedTraderLabel: 'Alex',
+      viewerHasTraded: true,
+      viewerLikeCount: 5,
+    });
     for (const reason of allPossible) {
       expect(reason.toLowerCase()).not.toMatch(/ai picked|smart money|alpha|top trader/);
     }

@@ -10,7 +10,10 @@ import { prisma } from '@fomo/db';
 import { ACTIVITY_REALTIME_CHANNEL, normalizeEvmAddress } from '@fomo/domain';
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import { NotificationFanoutService, type InsertedSwap } from '../notifications/notification-fanout.service';
+import {
+  NotificationFanoutService,
+  type InsertedSwap,
+} from '../notifications/notification-fanout.service';
 import { BASE_SEED_MARKETS, USDC_ADDRESS_BASE, type SeedMarket } from './seed-markets';
 
 /** Raw candle granularity — see the Candle model comment in schema.prisma. */
@@ -55,7 +58,11 @@ export class MarketIngestionService {
   ) {
     this.poolReader = new UniswapV3PoolReader({ rpcUrl });
     this.tokenReader = new EvmChainDataProvider({
-      chain: { identifier: config.chainIdentifier, name: config.chainName, nativeSymbol: config.chainNativeSymbol },
+      chain: {
+        identifier: config.chainIdentifier,
+        name: config.chainName,
+        nativeSymbol: config.chainNativeSymbol,
+      },
       rpcUrl,
     });
     this.fanout = new NotificationFanoutService(redis, logger, whaleTradeUsdThreshold);
@@ -92,7 +99,9 @@ export class MarketIngestionService {
     }
 
     const quoteTokenAddress =
-      poolState.token0.toLowerCase() === seed.baseTokenAddress.toLowerCase() ? poolState.token1 : poolState.token0;
+      poolState.token0.toLowerCase() === seed.baseTokenAddress.toLowerCase()
+        ? poolState.token1
+        : poolState.token0;
 
     const baseToken = await this.upsertToken(chainId, seed.baseTokenAddress);
     await sleep(RPC_CALL_DELAY_MS);
@@ -180,12 +189,16 @@ export class MarketIngestionService {
 
     const poolState = await this.poolReader.getPoolState(market.pairAddress);
     if (!poolState) {
-      this.logger.warn({ pool: market.pairAddress }, 'Skipped price refresh: pool state unreadable');
+      this.logger.warn(
+        { pool: market.pairAddress },
+        'Skipped price refresh: pool state unreadable',
+      );
       return false;
     }
     await sleep(RPC_CALL_DELAY_MS);
 
-    const baseIsToken0 = poolState.token0.toLowerCase() === market.token.contractAddress.toLowerCase();
+    const baseIsToken0 =
+      poolState.token0.toLowerCase() === market.token.contractAddress.toLowerCase();
     const [dec0, dec1] = baseIsToken0
       ? [market.token.decimals, market.quoteToken.decimals]
       : [market.quoteToken.decimals, market.token.decimals];
@@ -222,7 +235,9 @@ export class MarketIngestionService {
 
     const totalSupply = await this.poolReader.getTotalSupply(market.token.contractAddress);
     const marketCapUsd =
-      totalSupply !== null ? computeFullyDilutedMarketCapUsd(totalSupply, market.token.decimals, baseUsd) : null;
+      totalSupply !== null
+        ? computeFullyDilutedMarketCapUsd(totalSupply, market.token.decimals, baseUsd)
+        : null;
 
     await prisma.tokenMarket.update({
       where: { id: market.id },
@@ -251,14 +266,18 @@ export class MarketIngestionService {
     // not the rate at the time of that trade).
     const quoteUsdPrices = new Map<string, number>([[USDC_ADDRESS_BASE.toLowerCase(), 1]]);
     for (const m of markets) {
-      if (m.priceUsd !== null) quoteUsdPrices.set(m.token.contractAddress.toLowerCase(), Number(m.priceUsd));
+      if (m.priceUsd !== null)
+        quoteUsdPrices.set(m.token.contractAddress.toLowerCase(), Number(m.priceUsd));
     }
 
     for (const market of markets) {
       if (!market.cursor) continue;
       const quoteUsd = quoteUsdPrices.get(market.quoteToken.contractAddress.toLowerCase());
       if (quoteUsd === undefined) {
-        this.logger.warn({ pool: market.pairAddress }, 'Skipped swap ingestion: quote token has no resolved USD price');
+        this.logger.warn(
+          { pool: market.pairAddress },
+          'Skipped swap ingestion: quote token has no resolved USD price',
+        );
         continue;
       }
       await this.ingestSwapsForMarket(market, quoteUsd);
@@ -267,13 +286,16 @@ export class MarketIngestionService {
   }
 
   private async ingestSwapsForMarket(
-    market: Prisma.TokenMarketGetPayload<{ include: { token: true; quoteToken: true; cursor: true } }>,
+    market: Prisma.TokenMarketGetPayload<{
+      include: { token: true; quoteToken: true; cursor: true };
+    }>,
     quoteUsdPrice: number,
   ): Promise<void> {
     if (market.token.decimals === null || market.quoteToken.decimals === null) return;
     const poolState = await this.poolReader.getPoolState(market.pairAddress);
     if (!poolState) return;
-    const baseIsToken0 = poolState.token0.toLowerCase() === market.token.contractAddress.toLowerCase();
+    const baseIsToken0 =
+      poolState.token0.toLowerCase() === market.token.contractAddress.toLowerCase();
     const [poolDec0, poolDec1] = baseIsToken0
       ? [market.token.decimals, market.quoteToken.decimals]
       : [market.quoteToken.decimals, market.token.decimals];
@@ -291,13 +313,21 @@ export class MarketIngestionService {
 
       while (cursor < targetBlock) {
         const chunkEnd = bigintMin(targetBlock, cursor + LOG_CHUNK_BLOCKS);
-        const events = await this.poolReader.getSwapEvents(market.pairAddress, cursor + 1n, chunkEnd);
+        const events = await this.poolReader.getSwapEvents(
+          market.pairAddress,
+          cursor + 1n,
+          chunkEnd,
+        );
         if (events === null) {
           // eth_getLogs itself failed for this range — distinct from a successful query
           // that just found nothing. Stop here without touching the cursor, so the next
           // tick retries this exact range instead of silently skipping it forever.
           this.logger.warn(
-            { pool: market.pairAddress, fromBlock: (cursor + 1n).toString(), toBlock: chunkEnd.toString() },
+            {
+              pool: market.pairAddress,
+              fromBlock: (cursor + 1n).toString(),
+              toBlock: chunkEnd.toString(),
+            },
             'Stopped swap ingestion: eth_getLogs failed — cursor left unadvanced, will retry this range next tick',
           );
           break;
@@ -341,7 +371,8 @@ export class MarketIngestionService {
 
           if (traderAddress) {
             const existing = walletFirstSeen.get(traderAddress);
-            if (!existing || blockTimestamp < existing) walletFirstSeen.set(traderAddress, blockTimestamp);
+            if (!existing || blockTimestamp < existing)
+              walletFirstSeen.set(traderAddress, blockTimestamp);
           }
 
           rows.push({
@@ -370,7 +401,10 @@ export class MarketIngestionService {
         if (rows.length > 0) {
           if (walletFirstSeen.size > 0) {
             await prisma.wallet.createMany({
-              data: Array.from(walletFirstSeen, ([address, firstSeenAt]) => ({ address, firstSeenAt })),
+              data: Array.from(walletFirstSeen, ([address, firstSeenAt]) => ({
+                address,
+                firstSeenAt,
+              })),
               skipDuplicates: true,
             });
           }
@@ -390,7 +424,13 @@ export class MarketIngestionService {
 
       if (totalSwaps > 0) {
         this.logger.info(
-          { pool: market.pairAddress, symbol: market.token.symbol, swaps: totalSwaps, fromBlock: cursorBlock.toString(), toBlock: targetBlock.toString() },
+          {
+            pool: market.pairAddress,
+            symbol: market.token.symbol,
+            swaps: totalSwaps,
+            fromBlock: cursorBlock.toString(),
+            toBlock: targetBlock.toString(),
+          },
           'Ingested swaps',
         );
         await this.upsertCandlesFromSwaps(market.id, minTs!, maxTs!);
@@ -407,34 +447,52 @@ export class MarketIngestionService {
     try {
       await this.fanout.checkTrendingTransition(market.id);
     } catch (error) {
-      this.logger.error({ err: error, tokenMarketId: market.id }, 'Trending-transition notification check failed — indexing is unaffected');
+      this.logger.error(
+        { err: error, tokenMarketId: market.id },
+        'Trending-transition notification check failed — indexing is unaffected',
+      );
     }
   }
 
   /**
-   * FOLLOWED_TRADER_TRADE/WHALE_TRADE notifications, fired from the swaps this tick just
-   * persisted — see docs/NOTIFICATIONS.md. `createMany` above doesn't return inserted ids
-   * (same limitation noted throughout this file for wallets), so they're recovered here via
-   * the natural `(chain_id, tx_hash, log_index)` unique key before fan-out can reference
-   * them. Never allowed to fail the tick — a notification bug must not break indexing.
+   * FOLLOWED_TRADER_TRADE/WHALE_TRADE/WATCHED_TOKEN_ACTIVITY notifications, fired from the
+   * swaps this tick just persisted — see docs/NOTIFICATIONS.md and
+   * docs/PHASE6_RETENTION_SOCIAL.md#notification-integration. `createMany` above doesn't
+   * return inserted ids (same limitation noted throughout this file for wallets), so they're
+   * recovered here via the natural `(chain_id, tx_hash, log_index)` unique key before
+   * fan-out can reference them. Never allowed to fail the tick — a notification bug must not
+   * break indexing.
    */
   private async notifyOnInsertedSwaps(rows: Prisma.SwapCreateManyInput[]): Promise<void> {
     try {
       const inserted = await prisma.swap.findMany({
-        where: { OR: rows.map((r) => ({ chainId: r.chainId, txHash: r.txHash, logIndex: r.logIndex })) },
+        where: {
+          OR: rows.map((r) => ({ chainId: r.chainId, txHash: r.txHash, logIndex: r.logIndex })),
+        },
         select: { id: true, txHash: true, logIndex: true },
       });
       const idByKey = new Map(inserted.map((s) => [`${s.txHash}:${s.logIndex}`, s.id]));
       const insertedSwaps: InsertedSwap[] = rows.flatMap((r) => {
         const id = idByKey.get(`${r.txHash}:${r.logIndex}`);
         if (!id) return [];
-        return [{ id, tokenMarketId: r.tokenMarketId, traderAddress: r.traderAddress ?? null, amountUsd: Number(r.volumeUsd) }];
+        return [
+          {
+            id,
+            tokenMarketId: r.tokenMarketId,
+            traderAddress: r.traderAddress ?? null,
+            amountUsd: Number(r.volumeUsd),
+          },
+        ];
       });
 
       await this.fanout.notifyFollowedTraderTrades(insertedSwaps);
       await this.fanout.notifyWhaleTrades(insertedSwaps);
+      await this.fanout.notifyWatchedTokenActivity(insertedSwaps);
     } catch (error) {
-      this.logger.error({ err: error }, 'Swap-triggered notification fan-out failed — indexing is unaffected');
+      this.logger.error(
+        { err: error },
+        'Swap-triggered notification fan-out failed — indexing is unaffected',
+      );
     }
   }
 
@@ -453,7 +511,10 @@ export class MarketIngestionService {
         JSON.stringify({ tokenMarketId, count, atIso: new Date().toISOString() }),
       );
     } catch (error) {
-      this.logger.warn({ err: error }, 'Failed to publish new-activity event — feed will catch up on next poll');
+      this.logger.warn(
+        { err: error },
+        'Failed to publish new-activity event — feed will catch up on next poll',
+      );
     }
   }
 
@@ -463,7 +524,11 @@ export class MarketIngestionService {
    * rows. Only called when new swaps were actually found this tick — see
    * `recomputeRollups` for the part of the pipeline that must still run even when none were.
    */
-  private async upsertCandlesFromSwaps(tokenMarketId: string, fromTs: Date, toTs: Date): Promise<void> {
+  private async upsertCandlesFromSwaps(
+    tokenMarketId: string,
+    fromTs: Date,
+    toTs: Date,
+  ): Promise<void> {
     const paddedFrom = new Date(fromTs.getTime() - BUCKET_MINUTES * 60_000);
 
     await prisma.$executeRaw`
@@ -507,7 +572,9 @@ export class MarketIngestionService {
     // to the same rolling 24h window as volume24hUsd.
     // A bare aggregate with no GROUP BY always returns exactly one row, even when zero
     // swaps match — the `!` reflects that guarantee, not an assumption.
-    const [activityStats] = await prisma.$queryRaw<{ trade_count: bigint; unique_traders: bigint }[]>`
+    const [activityStats] = await prisma.$queryRaw<
+      { trade_count: bigint; unique_traders: bigint }[]
+    >`
       SELECT COUNT(*) AS trade_count, COUNT(DISTINCT trader_address) AS unique_traders
       FROM swaps
       WHERE token_market_id = ${tokenMarketId}::text
@@ -558,7 +625,8 @@ export class MarketIngestionService {
   }
 
   private requireChainId(): number {
-    if (this.chainId === null) throw new Error('MarketIngestionService.seed() must run before other methods');
+    if (this.chainId === null)
+      throw new Error('MarketIngestionService.seed() must run before other methods');
     return this.chainId;
   }
 }

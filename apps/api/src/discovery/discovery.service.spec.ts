@@ -1,5 +1,6 @@
 import { prisma } from '@fomo/db';
 import type { PinoLogger } from 'nestjs-pino';
+import type { WatchlistService } from '../market/watchlist.service';
 import type { ActivityService } from '../social/services/activity.service';
 import { DiscoveryService } from './discovery.service';
 
@@ -19,15 +20,29 @@ jest.mock('@fomo/db', () => ({
 const mockedPrisma = jest.mocked(prisma, { shallow: true });
 
 function fakeLogger(): PinoLogger {
-  return { setContext: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as unknown as PinoLogger;
+  return {
+    setContext: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  } as unknown as PinoLogger;
 }
 
 function fakeRedis() {
   return { get: jest.fn().mockResolvedValue(null), set: jest.fn().mockResolvedValue('OK') };
 }
 
-function fakeActivityService(): jest.Mocked<Pick<ActivityService, 'getPersonalizedFeedCandidates'>> {
+function fakeActivityService(): jest.Mocked<
+  Pick<ActivityService, 'getPersonalizedFeedCandidates'>
+> {
   return { getPersonalizedFeedCandidates: jest.fn() };
+}
+
+function fakeWatchlistService(): jest.Mocked<
+  Pick<WatchlistService, 'getWatchedSet' | 'getWatcherCount'>
+> {
+  return { getWatchedSet: jest.fn().mockResolvedValue(new Set()), getWatcherCount: jest.fn() };
 }
 
 const WALLET_A = '0x1111111111111111111111111111111111aaaa';
@@ -36,28 +51,50 @@ const WALLET_B = '0x2222222222222222222222222222222222bbbb';
 describe('DiscoveryService', () => {
   let redis: ReturnType<typeof fakeRedis>;
   let activity: ReturnType<typeof fakeActivityService>;
+  let watchlist: ReturnType<typeof fakeWatchlistService>;
   let service: DiscoveryService;
 
   beforeEach(() => {
     jest.clearAllMocks();
     redis = fakeRedis();
     activity = fakeActivityService();
-    service = new DiscoveryService(redis as never, fakeLogger(), activity as never);
+    watchlist = fakeWatchlistService();
+    service = new DiscoveryService(
+      redis as never,
+      fakeLogger(),
+      activity as never,
+      watchlist as never,
+    );
   });
 
   describe('activeTraders', () => {
     it('computes fresh on a cache miss and stores the result with a TTL', async () => {
-      (mockedPrisma.$queryRaw as jest.Mock).mockResolvedValue([{ trader_address: WALLET_A, volume_usd: '500', trade_count: 3n }]);
-      (mockedPrisma.wallet.findMany as jest.Mock).mockResolvedValue([{ address: WALLET_A, displayName: 'Alex', avatarUrl: null }]);
+      (mockedPrisma.$queryRaw as jest.Mock).mockResolvedValue([
+        { trader_address: WALLET_A, volume_usd: '500', trade_count: 3n },
+      ]);
+      (mockedPrisma.wallet.findMany as jest.Mock).mockResolvedValue([
+        { address: WALLET_A, displayName: 'Alex', avatarUrl: null },
+      ]);
 
       const result = await service.activeTraders(10);
 
-      expect(result).toEqual([{ address: WALLET_A, displayName: 'Alex', avatarUrl: null, volumeUsd: 500, tradeCount: 3 }]);
-      expect(redis.set).toHaveBeenCalledWith(expect.stringContaining('discovery:active-traders'), expect.any(String), 'EX', expect.any(Number));
+      expect(result).toEqual([
+        { address: WALLET_A, displayName: 'Alex', avatarUrl: null, volumeUsd: 500, tradeCount: 3 },
+      ]);
+      expect(redis.set).toHaveBeenCalledWith(
+        expect.stringContaining('discovery:active-traders'),
+        expect.any(String),
+        'EX',
+        expect.any(Number),
+      );
     });
 
     it('returns the cached value without touching the database on a cache hit', async () => {
-      redis.get.mockResolvedValue(JSON.stringify([{ address: WALLET_A, displayName: null, avatarUrl: null, volumeUsd: 1, tradeCount: 1 }]));
+      redis.get.mockResolvedValue(
+        JSON.stringify([
+          { address: WALLET_A, displayName: null, avatarUrl: null, volumeUsd: 1, tradeCount: 1 },
+        ]),
+      );
 
       const result = await service.activeTraders(10);
 
@@ -82,7 +119,11 @@ describe('DiscoveryService', () => {
       await service.largeTrades(20);
 
       expect(mockedPrisma.swap.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ volumeUsd: expect.objectContaining({ gte: expect.any(Number) }) }) }),
+        expect.objectContaining({
+          where: expect.objectContaining({
+            volumeUsd: expect.objectContaining({ gte: expect.any(Number) }),
+          }),
+        }),
       );
     });
   });
@@ -99,7 +140,12 @@ describe('DiscoveryService', () => {
       await service.risingTokens(10);
 
       expect(mockedPrisma.tokenTrendingState.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ isTrending: true, becameTrendingAt: expect.objectContaining({ gte: expect.any(Date) }) }) }),
+        expect.objectContaining({
+          where: expect.objectContaining({
+            isTrending: true,
+            becameTrendingAt: expect.objectContaining({ gte: expect.any(Date) }),
+          }),
+        }),
       );
     });
   });
@@ -109,19 +155,31 @@ describe('DiscoveryService', () => {
       // 80 total swaps over 40 days -> baseline 2/day, so the 2x bar is 4; today's 3 clears
       // the absolute floor (>=3) but not the multiplier bar.
       const fortyDaysAgo = new Date(Date.now() - 40 * 86_400_000);
-      (mockedPrisma.$queryRaw as jest.Mock).mockResolvedValue([{ trader_address: WALLET_A, trade_count: 3n }]);
-      (mockedPrisma.swap.groupBy as jest.Mock).mockResolvedValue([{ traderAddress: WALLET_A, _count: { _all: 80 } }]);
-      (mockedPrisma.wallet.findMany as jest.Mock).mockResolvedValue([{ address: WALLET_A, displayName: null, avatarUrl: null, firstSeenAt: fortyDaysAgo }]);
+      (mockedPrisma.$queryRaw as jest.Mock).mockResolvedValue([
+        { trader_address: WALLET_A, trade_count: 3n },
+      ]);
+      (mockedPrisma.swap.groupBy as jest.Mock).mockResolvedValue([
+        { traderAddress: WALLET_A, _count: { _all: 80 } },
+      ]);
+      (mockedPrisma.wallet.findMany as jest.Mock).mockResolvedValue([
+        { address: WALLET_A, displayName: null, avatarUrl: null, firstSeenAt: fortyDaysAgo },
+      ]);
 
       expect(await service.risingTraders(10)).toEqual([]);
     });
 
     it('includes a candidate genuinely trading above their historical pace', async () => {
       const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000);
-      (mockedPrisma.$queryRaw as jest.Mock).mockResolvedValue([{ trader_address: WALLET_B, trade_count: 5n }]);
+      (mockedPrisma.$queryRaw as jest.Mock).mockResolvedValue([
+        { trader_address: WALLET_B, trade_count: 5n },
+      ]);
       // 10 total swaps over 10 days -> baseline 1/day; today's 5 clears the 2x bar easily.
-      (mockedPrisma.swap.groupBy as jest.Mock).mockResolvedValue([{ traderAddress: WALLET_B, _count: { _all: 10 } }]);
-      (mockedPrisma.wallet.findMany as jest.Mock).mockResolvedValue([{ address: WALLET_B, displayName: 'Bo', avatarUrl: null, firstSeenAt: tenDaysAgo }]);
+      (mockedPrisma.swap.groupBy as jest.Mock).mockResolvedValue([
+        { traderAddress: WALLET_B, _count: { _all: 10 } },
+      ]);
+      (mockedPrisma.wallet.findMany as jest.Mock).mockResolvedValue([
+        { address: WALLET_B, displayName: 'Bo', avatarUrl: null, firstSeenAt: tenDaysAgo },
+      ]);
 
       const result = await service.risingTraders(10);
       expect(result).toHaveLength(1);
@@ -142,6 +200,39 @@ describe('DiscoveryService', () => {
       // No market cleared the gate, so no further signal queries should fire at all —
       // confirms the candidate-gate short-circuits before any per-user lookup.
       expect(mockedPrisma.follow.findMany).not.toHaveBeenCalled();
+    });
+
+    it('folds in the watchlist signal — Phase 6, see docs/PHASE6_RETENTION_SOCIAL.md#personalization', async () => {
+      const marketRow = {
+        id: 'market-1',
+        chain: { identifier: 'ethereum' },
+        token: {
+          contractAddress: '0xtoken',
+          symbol: 'TOK',
+          name: 'Token',
+          decimals: 18,
+          logoUrl: null,
+        },
+        quoteToken: { contractAddress: '0xquote', symbol: 'USDC', decimals: 6 },
+        dex: null,
+        feeTier: null,
+        priceUsd: 1,
+        liquidityUsd: 50_000,
+        volume24hUsd: 100_000,
+        priceChange24hPct: 5,
+        marketCapUsd: null,
+        lastPriceUpdateAt: new Date(),
+      };
+      (mockedPrisma.tokenMarket.findMany as jest.Mock).mockResolvedValue([marketRow]);
+      (mockedPrisma.follow.findMany as jest.Mock).mockResolvedValue([]);
+      (mockedPrisma.tradeTransaction.findMany as jest.Mock).mockResolvedValue([]);
+      (mockedPrisma.activityLike.findMany as jest.Mock).mockResolvedValue([]);
+      watchlist.getWatchedSet.mockResolvedValue(new Set(['market-1']));
+
+      const result = await service.personalizedDiscovery('user-1', 10);
+
+      expect(watchlist.getWatchedSet).toHaveBeenCalledWith('user-1', ['market-1']);
+      expect(result[0]?.reasons).toContain("You're watching this token");
     });
   });
 

@@ -7,6 +7,7 @@ import {
   NOTIFICATION_PREFERENCE_FIELD,
   NotificationDtoSchema,
   trendingTokenDedupeKey,
+  watchedTokenActivityDedupeKey,
   whaleTradeDedupeKey,
 } from './notifications';
 
@@ -31,6 +32,13 @@ describe('dedupe keys', () => {
     expect(whaleTradeDedupeKey('swap-1')).toBe(whaleTradeDedupeKey('swap-1'));
   });
 
+  it('watchedTokenActivityDedupeKey is keyed on the swap alone, same as whaleTradeDedupeKey — the (userId, type, dedupeKey) unique constraint is what keeps the two notification types independent', () => {
+    expect(watchedTokenActivityDedupeKey('swap-1')).toBe(watchedTokenActivityDedupeKey('swap-1'));
+    expect(watchedTokenActivityDedupeKey('swap-1')).not.toBe(
+      watchedTokenActivityDedupeKey('swap-2'),
+    );
+  });
+
   it('trendingTokenDedupeKey is scoped to one specific transition, so a later re-entry can notify again', () => {
     const first = trendingTokenDedupeKey('market-1', '2026-01-01T00:00:00.000Z');
     const second = trendingTokenDedupeKey('market-1', '2026-02-01T00:00:00.000Z');
@@ -40,29 +48,47 @@ describe('dedupe keys', () => {
 });
 
 describe('notificationDeepLink', () => {
-  it('FOLLOW links to the actor\'s existing trader profile route', () => {
-    expect(notificationDeepLink('FOLLOW', { actorWalletAddress: '0xabc', tokenAddress: null })).toBe('/trader/0xabc');
+  it("FOLLOW links to the actor's existing trader profile route", () => {
+    expect(
+      notificationDeepLink('FOLLOW', { actorWalletAddress: '0xabc', tokenAddress: null }),
+    ).toBe('/trader/0xabc');
   });
 
   it('FOLLOW has no link when the actor has no wallet at all', () => {
-    expect(notificationDeepLink('FOLLOW', { actorWalletAddress: null, tokenAddress: null })).toBeNull();
+    expect(
+      notificationDeepLink('FOLLOW', { actorWalletAddress: null, tokenAddress: null }),
+    ).toBeNull();
   });
 
-  it.each(['LIKE', 'FOLLOWED_TRADER_TRADE', 'WHALE_TRADE', 'TRENDING_TOKEN'] as const)(
-    '%s links to the existing market route for the referenced token',
-    (type) => {
-      expect(notificationDeepLink(type, { actorWalletAddress: null, tokenAddress: '0xtoken' })).toBe('/market/0xtoken');
-    },
-  );
+  it.each([
+    'LIKE',
+    'FOLLOWED_TRADER_TRADE',
+    'WHALE_TRADE',
+    'TRENDING_TOKEN',
+    'WATCHED_TOKEN_ACTIVITY',
+  ] as const)('%s links to the existing market route for the referenced token', (type) => {
+    expect(notificationDeepLink(type, { actorWalletAddress: null, tokenAddress: '0xtoken' })).toBe(
+      '/market/0xtoken',
+    );
+  });
 
   it('has no link when nothing to point to is available', () => {
-    expect(notificationDeepLink('TRENDING_TOKEN', { actorWalletAddress: null, tokenAddress: null })).toBeNull();
+    expect(
+      notificationDeepLink('TRENDING_TOKEN', { actorWalletAddress: null, tokenAddress: null }),
+    ).toBeNull();
   });
 });
 
 describe('NOTIFICATION_PREFERENCE_FIELD', () => {
   it('maps every notification type to a preference field', () => {
-    const types = ['FOLLOW', 'LIKE', 'FOLLOWED_TRADER_TRADE', 'WHALE_TRADE', 'TRENDING_TOKEN'] as const;
+    const types = [
+      'FOLLOW',
+      'LIKE',
+      'FOLLOWED_TRADER_TRADE',
+      'WHALE_TRADE',
+      'TRENDING_TOKEN',
+      'WATCHED_TOKEN_ACTIVITY',
+    ] as const;
     for (const type of types) {
       expect(NOTIFICATION_PREFERENCE_FIELD[type]).toBeTruthy();
     }
@@ -87,7 +113,10 @@ describe('NotificationDtoSchema', () => {
   });
 
   it('accepts a null actor address (actor exists but has no linked wallet)', () => {
-    const result = NotificationDtoSchema.safeParse({ ...base, actor: { address: null, displayName: null, avatarUrl: null } });
+    const result = NotificationDtoSchema.safeParse({
+      ...base,
+      actor: { address: null, displayName: null, avatarUrl: null },
+    });
     expect(result.success).toBe(true);
   });
 

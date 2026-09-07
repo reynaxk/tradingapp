@@ -1,4 +1,14 @@
-import { Controller, Delete, Get, HttpCode, Param, Post, Query, Sse, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  Sse,
+  UseGuards,
+} from '@nestjs/common';
 import type { MessageEvent } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { map, merge, interval, type Observable } from 'rxjs';
@@ -6,6 +16,7 @@ import { CurrentUser } from '../identity/current-user.decorator';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { OptionalAuthGuard } from '../identity/guards/optional-auth.guard';
 import type { SessionUser } from '../identity/identity.service';
+import { WatchlistService } from '../market/watchlist.service';
 import { AddressParamDto } from './dto/address-param.dto';
 import { ActivityQueryDto } from './dto/activity-query.dto';
 import { CursorQueryDto } from './dto/cursor-query.dto';
@@ -31,6 +42,7 @@ export class SocialController {
     private readonly traders: TraderService,
     private readonly trending: TrendingService,
     private readonly realtime: RealtimeService,
+    private readonly watchlist: WatchlistService,
   ) {}
 
   @UseGuards(OptionalAuthGuard)
@@ -47,7 +59,20 @@ export class SocialController {
   @UseGuards(JwtAuthGuard)
   @Get('activity/following')
   getFollowingActivity(@Query() query: CursorQueryDto, @CurrentUser() user: SessionUser) {
-    return this.activity.getFollowingFeed({ userId: user.id, cursor: query.cursor, limit: query.limit });
+    return this.activity.getFollowingFeed({
+      userId: user.id,
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  /** Phase 6 — see docs/PHASE6_RETENTION_SOCIAL.md#watchlists. `userId` always comes from
+   *  the session, never a client-supplied id — a user can only ever read their own
+   *  watchlist. */
+  @UseGuards(JwtAuthGuard)
+  @Get('watchlist')
+  getWatchlist(@Query() query: CursorQueryDto, @CurrentUser() user: SessionUser) {
+    return this.watchlist.listForUser(user.id, query.cursor, query.limit);
   }
 
   /** Public — this is a "something changed" ping, never user-specific data, so it never

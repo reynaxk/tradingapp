@@ -13,9 +13,13 @@ import { toSocialActivity } from '../social/social.mapper';
 import type { DiscoverQueryDto } from './dto/discover-query.dto';
 import type { SearchQueryDto } from './dto/search-query.dto';
 import { toMarketSummary, type MarketRow } from './market.mapper';
+import { WatchlistService } from './watchlist.service';
 
 const MARKET_INCLUDE = { token: true, quoteToken: true, chain: true } as const;
-const ACTIVITY_INCLUDE = { tokenMarket: { include: { token: true, quoteToken: true, chain: true } }, trader: true } as const;
+const ACTIVITY_INCLUDE = {
+  tokenMarket: { include: { token: true, quoteToken: true, chain: true } },
+  trader: true,
+} as const;
 /** How many recent trades a token page's "active traders" section considers — kept small
  *  and time-boxed (24h) so this is always a cheap, bounded query, never a full-history scan. */
 const TOKEN_TRADER_LOOKBACK_HOURS = 24;
@@ -31,6 +35,8 @@ const TIMEFRAME_CONFIG: Record<Timeframe, { bucket: string; lookback: string }> 
 
 @Injectable()
 export class MarketService {
+  constructor(private readonly watchlist: WatchlistService) {}
+
   /**
    * Ranked market opportunities. Phase 1's market count is small and bounded by design
    * (see docs/MARKET_DATA.md#token-discovery), so scoring/sorting happens in application
@@ -87,7 +93,7 @@ export class MarketService {
 
     const since = new Date(Date.now() - TOKEN_TRADER_LOOKBACK_HOURS * 60 * 60_000);
 
-    const [recentRows, activeGrouped, largeTradeRows] = await Promise.all([
+    const [recentRows, activeGrouped, largeTradeRows, watcherCount] = await Promise.all([
       // distinct + orderBy gives the N most-recently-active *distinct* traders in one query.
       prisma.swap.findMany({
         where: { tokenMarketId: market.id, traderAddress: { not: null } },
@@ -98,7 +104,11 @@ export class MarketService {
       }),
       prisma.swap.groupBy({
         by: ['traderAddress'],
-        where: { tokenMarketId: market.id, traderAddress: { not: null }, blockTimestamp: { gte: since } },
+        where: {
+          tokenMarketId: market.id,
+          traderAddress: { not: null },
+          blockTimestamp: { gte: since },
+        },
         _count: { _all: true },
         _max: { blockTimestamp: true },
         orderBy: { _count: { traderAddress: 'desc' } },
@@ -110,11 +120,14 @@ export class MarketService {
         take: limit,
         include: ACTIVITY_INCLUDE,
       }),
+      this.watchlist.getWatcherCount(market.id),
     ]);
 
     const activeWallets =
       activeGrouped.length > 0
-        ? await prisma.wallet.findMany({ where: { address: { in: activeGrouped.map((g) => g.traderAddress!) } } })
+        ? await prisma.wallet.findMany({
+            where: { address: { in: activeGrouped.map((g) => g.traderAddress!) } },
+          })
         : [];
     const walletByAddress = new Map(activeWallets.map((w) => [w.address, w]));
 
@@ -124,7 +137,15 @@ export class MarketService {
       uniqueTraders24h: market.uniqueTraders24h,
       recentTraders: recentRows.flatMap((row) =>
         row.traderAddress
-          ? [{ address: row.traderAddress, displayName: row.trader?.displayName ?? null, avatarUrl: row.trader?.avatarUrl ?? null, lastTradeAt: row.blockTimestamp.toISOString(), tradeCount24h: null }]
+          ? [
+              {
+                address: row.traderAddress,
+                displayName: row.trader?.displayName ?? null,
+                avatarUrl: row.trader?.avatarUrl ?? null,
+                lastTradeAt: row.blockTimestamp.toISOString(),
+                tradeCount24h: null,
+              },
+            ]
           : [],
       ),
       activeTraders: activeGrouped.flatMap((g) => {
@@ -140,7 +161,10 @@ export class MarketService {
           },
         ];
       }),
-      recentLargeTrades: largeTradeRows.map((row) => toSocialActivity(row, largeTradeLikeCounts.get(row.id) ?? 0, null)),
+      recentLargeTrades: largeTradeRows.map((row) =>
+        toSocialActivity(row, largeTradeLikeCounts.get(row.id) ?? 0, null),
+      ),
+      watcherCount,
     };
   }
 
@@ -154,7 +178,14 @@ export class MarketService {
 
     const { bucket, lookback } = TIMEFRAME_CONFIG[timeframe];
     const rows = await prisma.$queryRaw<
-      { bucket_start: Date; open: unknown; high: unknown; low: unknown; close: unknown; volume_usd: unknown }[]
+      {
+        bucket_start: Date;
+        open: unknown;
+        high: unknown;
+        low: unknown;
+        close: unknown;
+        volume_usd: unknown;
+      }[]
     >`
       SELECT
         time_bucket(${bucket}::interval, bucket_start) AS bucket_start,
@@ -244,6 +275,10 @@ function numDesc(a: { toNumber(): number } | null, b: { toNumber(): number } | n
  *  ActivityService's own like-count batching. */
 async function batchLikeCounts(swapIds: string[]): Promise<Map<string, number>> {
   if (swapIds.length === 0) return new Map();
-  const counts = await prisma.activityLike.groupBy({ by: ['swapId'], where: { swapId: { in: swapIds } }, _count: { _all: true } });
+  const counts = await prisma.activityLike.groupBy({
+    by: ['swapId'],
+    where: { swapId: { in: swapIds } },
+    _count: { _all: true },
+  });
   return new Map(counts.map((c) => [c.swapId, c._count._all]));
 }

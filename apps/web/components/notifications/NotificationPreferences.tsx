@@ -4,15 +4,31 @@ import type { NotificationPreferences } from '@fomo/domain';
 import { Surface } from '@fomo/ui';
 import { useEffect, useState } from 'react';
 import { Skeleton } from '@/components/market/Skeleton';
-import { fetchNotificationPreferences, updateNotificationPreferences } from '@/lib/notifications-client';
+import {
+  fetchNotificationPreferences,
+  updateNotificationPreferences,
+} from '@/lib/notifications-client';
 import { hasStoredSession } from '@/lib/session-client';
 
 const FIELDS: { key: keyof NotificationPreferences; label: string; detail: string }[] = [
   { key: 'follows', label: 'New followers', detail: 'When someone starts following you' },
   { key: 'likes', label: 'Likes', detail: 'When someone likes one of your trades' },
-  { key: 'followedTraderTrades', label: 'Trades from people you follow', detail: 'When a trader you follow makes a trade' },
-  { key: 'whaleTrades', label: 'Whale trades', detail: `Large trades in tokens you've traded before` },
+  {
+    key: 'followedTraderTrades',
+    label: 'Trades from people you follow',
+    detail: 'When a trader you follow makes a trade',
+  },
+  {
+    key: 'whaleTrades',
+    label: 'Whale trades',
+    detail: `Large trades in tokens you've traded before`,
+  },
   { key: 'trendingTokens', label: 'Trending tokens', detail: 'When a token newly starts trending' },
+  {
+    key: 'watchedTokenActivity',
+    label: 'Watched token activity',
+    detail: 'Large trades in a token on your watchlist',
+  },
 ];
 
 /** Server-authoritative toggles — see docs/NOTIFICATIONS.md#preferences. Every change is

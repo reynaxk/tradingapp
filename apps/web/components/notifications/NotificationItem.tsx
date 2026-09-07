@@ -10,6 +10,7 @@ const KIND_COLOR: Record<NotificationDto['type'], string> = {
   FOLLOWED_TRADER_TRADE: 'text-up',
   WHALE_TRADE: 'text-up',
   TRENDING_TOKEN: 'text-accent',
+  WATCHED_TOKEN_ACTIVITY: 'text-up',
 };
 
 /**
@@ -18,7 +19,13 @@ const KIND_COLOR: Record<NotificationDto['type'], string> = {
  * badge or animation (see docs/NOTIFICATIONS.md's "premium, subtle" UI bar). Clicking marks
  * it read and follows its deep link, when it has one.
  */
-export function NotificationItem({ notification, onOpen }: { notification: NotificationDto; onOpen: (n: NotificationDto) => void }) {
+export function NotificationItem({
+  notification,
+  onOpen,
+}: {
+  notification: NotificationDto;
+  onOpen: (n: NotificationDto) => void;
+}) {
   const isUnread = notification.readAt === null;
   const content = (
     <div
@@ -30,7 +37,12 @@ export function NotificationItem({ notification, onOpen }: { notification: Notif
       <Avatar notification={notification} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className={cn('font-mono text-[0.65rem] font-semibold uppercase tracking-wide', KIND_COLOR[notification.type])}>
+          <span
+            className={cn(
+              'font-mono text-[0.65rem] font-semibold uppercase tracking-wide',
+              KIND_COLOR[notification.type],
+            )}
+          >
             {notificationKindLabel(notification.type)}
           </span>
           <time
@@ -41,9 +53,13 @@ export function NotificationItem({ notification, onOpen }: { notification: Notif
             {formatRelativeTime(notification.createdAt)}
           </time>
         </div>
-        <p className="mt-0.5 truncate font-body text-sm text-ink-900">{notificationCopy(notification)}</p>
+        <p className="mt-0.5 truncate font-body text-sm text-ink-900">
+          {notificationCopy(notification)}
+        </p>
       </div>
-      {isUnread && <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+      {isUnread && (
+        <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+      )}
     </div>
   );
 
@@ -65,9 +81,17 @@ export function NotificationItem({ notification, onOpen }: { notification: Notif
 function Avatar({ notification }: { notification: NotificationDto }) {
   if (notification.actor?.avatarUrl) {
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={notification.actor.avatarUrl} alt="" className="h-8 w-8 shrink-0 rounded-full object-cover" />;
+    return (
+      <img
+        src={notification.actor.avatarUrl}
+        alt=""
+        className="h-8 w-8 shrink-0 rounded-full object-cover"
+      />
+    );
   }
-  const initials = notification.actor?.displayName?.slice(0, 2)?.toUpperCase() ?? notification.actor?.address?.slice(2, 4)?.toUpperCase();
+  const initials =
+    notification.actor?.displayName?.slice(0, 2)?.toUpperCase() ??
+    notification.actor?.address?.slice(2, 4)?.toUpperCase();
   return (
     <div
       aria-hidden

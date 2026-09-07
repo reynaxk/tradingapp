@@ -1,4 +1,9 @@
-import { followedTraderTradeDedupeKey, NOTIFICATION_REALTIME_CHANNEL, whaleTradeDedupeKey } from '@fomo/domain';
+import {
+  followedTraderTradeDedupeKey,
+  NOTIFICATION_REALTIME_CHANNEL,
+  watchedTokenActivityDedupeKey,
+  whaleTradeDedupeKey,
+} from '@fomo/domain';
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +17,7 @@ const mockPrisma = vi.hoisted(() => ({
   notificationPreference: { findMany: vi.fn() },
   tokenMarket: { findUnique: vi.fn() },
   tokenTrendingState: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
+  tokenWatch: { findMany: vi.fn() },
   user: { findMany: vi.fn() },
 }));
 
@@ -21,11 +27,27 @@ const fakeLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown a
 const WHALE_THRESHOLD = 25_000;
 
 // Healthy inputs to computeTrendingScore — same shape as social.test.ts's `healthy` fixture.
-const TRENDING_MARKET_HEALTHY = { volume24hUsd: 50_000, liquidityUsd: 100_000, uniqueTraders24h: 20, tradeCount24h: 40 };
-const TRENDING_MARKET_UNHEALTHY = { volume24hUsd: 50_000, liquidityUsd: 0, uniqueTraders24h: 20, tradeCount24h: 40 };
+const TRENDING_MARKET_HEALTHY = {
+  volume24hUsd: 50_000,
+  liquidityUsd: 100_000,
+  uniqueTraders24h: 20,
+  tradeCount24h: 40,
+};
+const TRENDING_MARKET_UNHEALTHY = {
+  volume24hUsd: 50_000,
+  liquidityUsd: 0,
+  uniqueTraders24h: 20,
+  tradeCount24h: 40,
+};
 
 function swap(overrides: Partial<InsertedSwap> = {}): InsertedSwap {
-  return { id: 'swap-1', tokenMarketId: 'tm-1', traderAddress: '0xtrader', amountUsd: 100, ...overrides };
+  return {
+    id: 'swap-1',
+    tokenMarketId: 'tm-1',
+    traderAddress: '0xtrader',
+    amountUsd: 100,
+    ...overrides,
+  };
 }
 
 describe('NotificationFanoutService', () => {
@@ -35,7 +57,11 @@ describe('NotificationFanoutService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fakeRedis = { publish: vi.fn().mockResolvedValue(1) };
-    service = new NotificationFanoutService(fakeRedis as unknown as Redis, fakeLogger, WHALE_THRESHOLD);
+    service = new NotificationFanoutService(
+      fakeRedis as unknown as Redis,
+      fakeLogger,
+      WHALE_THRESHOLD,
+    );
 
     mockPrisma.notification.createMany.mockResolvedValue({ count: 0 });
     mockPrisma.notification.findMany.mockResolvedValue([]);
@@ -44,13 +70,18 @@ describe('NotificationFanoutService', () => {
     mockPrisma.follow.findMany.mockResolvedValue([]);
     mockPrisma.tradeTransaction.findMany.mockResolvedValue([]);
     mockPrisma.tokenTrendingState.findUnique.mockResolvedValue(null);
+    mockPrisma.tokenWatch.findMany.mockResolvedValue([]);
     mockPrisma.user.findMany.mockResolvedValue([]);
   });
 
   describe('notifyFollowedTraderTrades', () => {
     it('creates a notification for a follower with the preference enabled, and publishes a realtime ping', async () => {
-      mockPrisma.follow.findMany.mockResolvedValue([{ userId: 'follower-1', walletAddress: '0xtrader' }]);
-      mockPrisma.wallet.findMany.mockResolvedValue([{ address: '0xtrader', userId: 'trader-user-1' }]);
+      mockPrisma.follow.findMany.mockResolvedValue([
+        { userId: 'follower-1', walletAddress: '0xtrader' },
+      ]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
       mockPrisma.notification.createMany.mockResolvedValue({ count: 1 });
       const createdAt = new Date('2026-01-01T00:00:00.000Z');
       mockPrisma.notification.findMany.mockResolvedValue([
@@ -74,15 +105,31 @@ describe('NotificationFanoutService', () => {
       );
       expect(fakeRedis.publish).toHaveBeenCalledWith(
         NOTIFICATION_REALTIME_CHANNEL,
-        JSON.stringify({ userId: 'follower-1', notificationId: 'notif-1', type: 'FOLLOWED_TRADER_TRADE', atIso: createdAt.toISOString() }),
+        JSON.stringify({
+          userId: 'follower-1',
+          notificationId: 'notif-1',
+          type: 'FOLLOWED_TRADER_TRADE',
+          atIso: createdAt.toISOString(),
+        }),
       );
     });
 
     it('never notifies a follower who has disabled followedTraderTrades', async () => {
-      mockPrisma.follow.findMany.mockResolvedValue([{ userId: 'follower-1', walletAddress: '0xtrader' }]);
-      mockPrisma.wallet.findMany.mockResolvedValue([{ address: '0xtrader', userId: 'trader-user-1' }]);
+      mockPrisma.follow.findMany.mockResolvedValue([
+        { userId: 'follower-1', walletAddress: '0xtrader' },
+      ]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
       mockPrisma.notificationPreference.findMany.mockResolvedValue([
-        { userId: 'follower-1', follows: true, likes: true, followedTraderTrades: false, whaleTrades: true, trendingTokens: true },
+        {
+          userId: 'follower-1',
+          follows: true,
+          likes: true,
+          followedTraderTrades: false,
+          whaleTrades: true,
+          trendingTokens: true,
+        },
       ]);
 
       await service.notifyFollowedTraderTrades([swap()]);
@@ -91,8 +138,12 @@ describe('NotificationFanoutService', () => {
     });
 
     it('never self-notifies a user who follows their own wallet', async () => {
-      mockPrisma.follow.findMany.mockResolvedValue([{ userId: 'trader-user-1', walletAddress: '0xtrader' }]);
-      mockPrisma.wallet.findMany.mockResolvedValue([{ address: '0xtrader', userId: 'trader-user-1' }]);
+      mockPrisma.follow.findMany.mockResolvedValue([
+        { userId: 'trader-user-1', walletAddress: '0xtrader' },
+      ]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
 
       await service.notifyFollowedTraderTrades([swap()]);
 
@@ -117,8 +168,12 @@ describe('NotificationFanoutService', () => {
 
     it('notifies a user with a prior CONFIRMED trade in that exact token', async () => {
       mockPrisma.notification.findMany.mockResolvedValueOnce([]); // cooldown check: nothing on cooldown
-      mockPrisma.tradeTransaction.findMany.mockResolvedValue([{ userId: 'past-trader-1', tokenMarketId: 'tm-1' }]);
-      mockPrisma.wallet.findMany.mockResolvedValue([{ address: '0xtrader', userId: 'trader-user-1' }]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([
+        { userId: 'past-trader-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
       mockPrisma.notification.createMany.mockResolvedValue({ count: 1 });
       const createdAt = new Date('2026-01-01T00:00:00.000Z');
       mockPrisma.notification.findMany.mockResolvedValueOnce([
@@ -153,8 +208,12 @@ describe('NotificationFanoutService', () => {
 
     it('never self-notifies the whale trader even if they have a confirmed trade history in that token', async () => {
       mockPrisma.notification.findMany.mockResolvedValueOnce([]);
-      mockPrisma.tradeTransaction.findMany.mockResolvedValue([{ userId: 'trader-user-1', tokenMarketId: 'tm-1' }]);
-      mockPrisma.wallet.findMany.mockResolvedValue([{ address: '0xtrader', userId: 'trader-user-1' }]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([
+        { userId: 'trader-user-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
 
       await service.notifyWhaleTrades([swap({ amountUsd: 50_000 })]);
 
@@ -163,8 +222,12 @@ describe('NotificationFanoutService', () => {
 
     it('bounds a burst: only the first eligible whale swap per token in one tick triggers notifications', async () => {
       mockPrisma.notification.findMany.mockResolvedValueOnce([]);
-      mockPrisma.tradeTransaction.findMany.mockResolvedValue([{ userId: 'past-trader-1', tokenMarketId: 'tm-1' }]);
-      mockPrisma.wallet.findMany.mockResolvedValue([{ address: '0xtrader', userId: 'trader-user-1' }]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([
+        { userId: 'past-trader-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
       mockPrisma.notification.createMany.mockResolvedValue({ count: 1 });
       mockPrisma.notification.findMany.mockResolvedValueOnce([]);
 
@@ -180,6 +243,131 @@ describe('NotificationFanoutService', () => {
     });
   });
 
+  describe('notifyWatchedTokenActivity', () => {
+    it('does not query anything for a trade below the whale threshold', async () => {
+      await service.notifyWatchedTokenActivity([swap({ amountUsd: 100 })]);
+
+      expect(mockPrisma.notification.findMany).not.toHaveBeenCalled();
+      expect(mockPrisma.tokenWatch.findMany).not.toHaveBeenCalled();
+      expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    });
+
+    it('notifies a watcher of the token on a large trade', async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([]); // cooldown check: nothing on cooldown
+      mockPrisma.tokenWatch.findMany.mockResolvedValue([
+        { userId: 'watcher-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([]); // no prior traders to exclude
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
+      mockPrisma.notification.createMany.mockResolvedValue({ count: 1 });
+      const createdAt = new Date('2026-01-01T00:00:00.000Z');
+      mockPrisma.notification.findMany.mockResolvedValueOnce([
+        { id: 'notif-3', userId: 'watcher-1', type: 'WATCHED_TOKEN_ACTIVITY', createdAt },
+      ]);
+
+      await service.notifyWatchedTokenActivity([swap({ id: 'swap-3', amountUsd: 50_000 })]);
+
+      expect(mockPrisma.notification.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: [
+            expect.objectContaining({
+              userId: 'watcher-1',
+              type: 'WATCHED_TOKEN_ACTIVITY',
+              dedupeKey: watchedTokenActivityDedupeKey('swap-3'),
+              swapId: 'swap-3',
+              tokenMarketId: 'tm-1',
+            }),
+          ],
+        }),
+      );
+    });
+
+    it('never notifies a watcher who has disabled watchedTokenActivity', async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([]);
+      mockPrisma.tokenWatch.findMany.mockResolvedValue([
+        { userId: 'watcher-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([]);
+      mockPrisma.notificationPreference.findMany.mockResolvedValue([
+        {
+          userId: 'watcher-1',
+          follows: true,
+          likes: true,
+          followedTraderTrades: true,
+          whaleTrades: true,
+          trendingTokens: true,
+          watchedTokenActivity: false,
+        },
+      ]);
+
+      await service.notifyWatchedTokenActivity([swap({ amountUsd: 50_000 })]);
+
+      expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    });
+
+    it("excludes a watcher who already has confirmed trading history in the token — that is WHALE_TRADE's own audience", async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([]);
+      mockPrisma.tokenWatch.findMany.mockResolvedValue([
+        { userId: 'past-trader-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([
+        { userId: 'past-trader-1', tokenMarketId: 'tm-1' },
+      ]);
+
+      await service.notifyWatchedTokenActivity([swap({ amountUsd: 50_000 })]);
+
+      expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    });
+
+    it('never self-notifies a watcher who is also the trader behind this exact swap', async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([]);
+      mockPrisma.tokenWatch.findMany.mockResolvedValue([
+        { userId: 'trader-user-1', tokenMarketId: 'tm-1' },
+      ]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([]);
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { address: '0xtrader', userId: 'trader-user-1' },
+      ]);
+
+      await service.notifyWatchedTokenActivity([swap({ amountUsd: 50_000 })]);
+
+      expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    });
+
+    it("respects its own per-token cooldown, independent of WHALE_TRADE's", async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([{ tokenMarketId: 'tm-1' }]);
+
+      await service.notifyWatchedTokenActivity([swap({ amountUsd: 50_000 })]);
+
+      expect(mockPrisma.tokenWatch.findMany).not.toHaveBeenCalled();
+      expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    });
+
+    it('issues exactly one bounded watcher query regardless of how many tokens are eligible this tick', async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([]);
+      mockPrisma.tokenWatch.findMany.mockResolvedValue([]);
+      mockPrisma.tradeTransaction.findMany.mockResolvedValue([]);
+
+      await service.notifyWatchedTokenActivity([
+        swap({ id: 'swap-a', tokenMarketId: 'tm-1', amountUsd: 50_000 }),
+        swap({ id: 'swap-b', tokenMarketId: 'tm-2', amountUsd: 60_000 }),
+      ]);
+
+      expect(mockPrisma.tokenWatch.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing when a watched token has no watchers', async () => {
+      mockPrisma.notification.findMany.mockResolvedValueOnce([]);
+      mockPrisma.tokenWatch.findMany.mockResolvedValue([]);
+
+      await service.notifyWatchedTokenActivity([swap({ amountUsd: 50_000 })]);
+
+      expect(mockPrisma.notification.createMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('checkTrendingTransition', () => {
     it('does nothing when the token market cannot be found', async () => {
       mockPrisma.tokenMarket.findUnique.mockResolvedValue(null);
@@ -190,7 +378,10 @@ describe('NotificationFanoutService', () => {
     });
 
     it('notifies every preference-enabled user on a false -> true trending transition', async () => {
-      mockPrisma.tokenMarket.findUnique.mockResolvedValue({ id: 'tm-1', ...TRENDING_MARKET_HEALTHY });
+      mockPrisma.tokenMarket.findUnique.mockResolvedValue({
+        id: 'tm-1',
+        ...TRENDING_MARKET_HEALTHY,
+      });
       mockPrisma.tokenTrendingState.findUnique.mockResolvedValue(null); // never tracked before -> wasTrending false
       mockPrisma.user.findMany.mockResolvedValue([{ id: 'user-1' }, { id: 'user-2' }]);
       mockPrisma.notification.createMany.mockResolvedValue({ count: 2 });
@@ -207,8 +398,16 @@ describe('NotificationFanoutService', () => {
       expect(mockPrisma.notification.createMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: [
-            expect.objectContaining({ userId: 'user-1', type: 'TRENDING_TOKEN', tokenMarketId: 'tm-1' }),
-            expect.objectContaining({ userId: 'user-2', type: 'TRENDING_TOKEN', tokenMarketId: 'tm-1' }),
+            expect.objectContaining({
+              userId: 'user-1',
+              type: 'TRENDING_TOKEN',
+              tokenMarketId: 'tm-1',
+            }),
+            expect.objectContaining({
+              userId: 'user-2',
+              type: 'TRENDING_TOKEN',
+              tokenMarketId: 'tm-1',
+            }),
           ],
         }),
       );
@@ -220,8 +419,14 @@ describe('NotificationFanoutService', () => {
     });
 
     it('does not renotify while a token stays trending across ticks', async () => {
-      mockPrisma.tokenMarket.findUnique.mockResolvedValue({ id: 'tm-1', ...TRENDING_MARKET_HEALTHY });
-      mockPrisma.tokenTrendingState.findUnique.mockResolvedValue({ isTrending: true, becameTrendingAt: new Date() });
+      mockPrisma.tokenMarket.findUnique.mockResolvedValue({
+        id: 'tm-1',
+        ...TRENDING_MARKET_HEALTHY,
+      });
+      mockPrisma.tokenTrendingState.findUnique.mockResolvedValue({
+        isTrending: true,
+        becameTrendingAt: new Date(),
+      });
 
       await service.checkTrendingTransition('tm-1');
 
@@ -231,8 +436,14 @@ describe('NotificationFanoutService', () => {
     });
 
     it('updates state but never notifies on exiting trending (true -> false)', async () => {
-      mockPrisma.tokenMarket.findUnique.mockResolvedValue({ id: 'tm-1', ...TRENDING_MARKET_UNHEALTHY });
-      mockPrisma.tokenTrendingState.findUnique.mockResolvedValue({ isTrending: true, becameTrendingAt: new Date() });
+      mockPrisma.tokenMarket.findUnique.mockResolvedValue({
+        id: 'tm-1',
+        ...TRENDING_MARKET_UNHEALTHY,
+      });
+      mockPrisma.tokenTrendingState.findUnique.mockResolvedValue({
+        isTrending: true,
+        becameTrendingAt: new Date(),
+      });
 
       await service.checkTrendingTransition('tm-1');
 

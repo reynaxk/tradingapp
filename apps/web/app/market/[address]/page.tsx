@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { TIMEFRAMES, type Timeframe } from '@fomo/domain';
 import { Surface } from '@fomo/ui';
 import Link from 'next/link';
@@ -9,6 +10,8 @@ import { PriceChart } from '@/components/market/PriceChart';
 import { StaleBadge } from '@/components/market/StaleBadge';
 import { TimeframeTabs } from '@/components/market/TimeframeTabs';
 import { TokenIdentity } from '@/components/market/TokenIdentity';
+import { WatchButton } from '@/components/market/WatchButton';
+import { ShareButton } from '@/components/social/ShareButton';
 import { ActivityFeed } from '@/components/social/ActivityFeed';
 import { TradeButton } from '@/components/trading/TradeButton';
 import { TokenTradersPanel } from '@/components/discovery/TokenTradersPanel';
@@ -21,6 +24,29 @@ export const revalidate = 15;
 
 function isTimeframe(value: string | undefined): value is Timeframe {
   return TIMEFRAMES.includes(value as Timeframe);
+}
+
+/** Public, unauthenticated metadata for link previews — see
+ *  docs/PHASE6_RETENTION_SOCIAL.md#shareable-pages. Only ever the same public fields
+ *  `fetchToken` already serves; a missing token falls back to a generic title rather than
+ *  throwing, since Next calls this before the page itself would 404. */
+export async function generateMetadata({
+  params,
+}: {
+  params: { address: string };
+}): Promise<Metadata> {
+  const market = await fetchToken(params.address);
+  if (!market) return { title: 'Token not found — Fomo' };
+
+  const name = market.symbol ?? market.name ?? truncateAddress(market.tokenAddress);
+  const title = `${name} — ${formatPrice(market.priceUsd)} — Fomo`;
+  const description = `${name} on ${market.chainIdentifier}: price, 24h volume, liquidity, and live trading activity.`;
+  return {
+    title,
+    description,
+    openGraph: { title, description },
+    twitter: { card: 'summary', title, description },
+  };
 }
 
 export default async function TokenDetailPage({
@@ -50,7 +76,12 @@ export default async function TokenDetailPage({
 
         <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-center gap-4">
-            <TokenIdentity symbol={market.symbol} name={market.name} logoUrl={market.logoUrl} size="lg" />
+            <TokenIdentity
+              symbol={market.symbol}
+              name={market.name}
+              logoUrl={market.logoUrl}
+              size="lg"
+            />
             <span className="rounded-full border border-line px-2.5 py-1 font-mono text-[0.7rem] uppercase tracking-wide text-ink-400">
               {market.chainIdentifier}
             </span>
@@ -58,11 +89,20 @@ export default async function TokenDetailPage({
           {market.isStale && <StaleBadge />}
         </div>
 
-        <div className="mt-6 flex flex-wrap items-baseline gap-3">
-          <span className="font-mono text-3xl font-semibold tabular-nums text-ink-900">
-            {formatPrice(market.priceUsd)}
-          </span>
-          <PriceChange value={market.priceChange24hPct} className="text-base" />
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-baseline gap-3">
+            <span className="font-mono text-3xl font-semibold tabular-nums text-ink-900">
+              {formatPrice(market.priceUsd)}
+            </span>
+            <PriceChange value={market.priceChange24hPct} className="text-base" />
+          </div>
+          <div className="flex items-center gap-2">
+            <WatchButton address={market.tokenAddress} initialWatching={null} />
+            <ShareButton
+              title={`${market.symbol ?? market.name ?? 'Token'} on Fomo`}
+              path={`/market/${market.tokenAddress}`}
+            />
+          </div>
         </div>
 
         {market.decimals !== null && market.quoteDecimals !== null && (
@@ -131,11 +171,20 @@ export default async function TokenDetailPage({
         <Surface className="mt-6 p-5">
           <h2 className="mb-4 font-display text-sm font-semibold text-ink-900">Market data</h2>
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <DataRow label="Contract" value={market.tokenAddress} mono title={market.tokenAddress} truncate />
+            <DataRow
+              label="Contract"
+              value={market.tokenAddress}
+              mono
+              title={market.tokenAddress}
+              truncate
+            />
             <DataRow label="Decimals" value={market.decimals?.toString() ?? '—'} mono />
             <DataRow label="Quote token" value={market.quoteSymbol ?? '—'} />
             <DataRow label="DEX" value={market.dex ?? '—'} />
-            <DataRow label="Fee tier" value={market.feeTier !== null ? `${market.feeTier / 10_000}%` : '—'} />
+            <DataRow
+              label="Fee tier"
+              value={market.feeTier !== null ? `${market.feeTier / 10_000}%` : '—'}
+            />
             <DataRow
               label="Last updated"
               value={market.lastPriceUpdateAt ? formatDateTime(market.lastPriceUpdateAt) : 'never'}

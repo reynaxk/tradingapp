@@ -96,7 +96,10 @@ export function computeActivityFrequencyPerDay(
 
 /** A token is "Rising" exactly when it transitioned into trending within the configured
  *  window — reuses Phase 4's TokenTrendingState.becameTrendingAt directly. */
-export function isRecentlyRisingToken(becameTrendingAt: Date | string | null, now: Date = new Date()): boolean {
+export function isRecentlyRisingToken(
+  becameTrendingAt: Date | string | null,
+  now: Date = new Date(),
+): boolean {
   if (becameTrendingAt === null) return false;
   const at = typeof becameTrendingAt === 'string' ? new Date(becameTrendingAt) : becameTrendingAt;
   const hours = (now.getTime() - at.getTime()) / 3_600_000;
@@ -139,6 +142,13 @@ export const PERSONALIZATION_WEIGHTS = {
   engagement: 0.1,
   /** How fresh the most relevant signal is — decays linearly to 0 over RECENCY_WINDOW_HOURS. */
   recency: 0.1,
+  /** Phase 6 — the viewer has this token on their watchlist (see TokenWatch). Added on top
+   *  of the five Phase 5 weights above without rebalancing them, so a non-watched token's
+   *  score is completely unchanged from Phase 5 — see docs/PHASE6_RETENTION_SOCIAL.md#personalization.
+   *  Deliberately NOT the largest weight: "watchlist ≠ automatic top ranking" per spec, so a
+   *  single watched token can nudge the feed without being able to dominate it outright
+   *  (marketActivity + followedTrader alone already outweigh it). */
+  watchlist: 0.25,
 } as const;
 
 /** The window a "followed trader traded this" signal stays fresh for — matches
@@ -161,6 +171,8 @@ export interface PersonalizationSignals {
    *  last price update) — null when no timestamp is available, contributing no recency
    *  boost rather than a guessed one. */
   hoursSinceRelevantActivity: number | null;
+  /** Phase 6 — the viewer has this token on their watchlist. See PERSONALIZATION_WEIGHTS.watchlist. */
+  isWatched: boolean;
 }
 
 /** Sum of five independently-bounded weighted terms — see PERSONALIZATION_WEIGHTS above
@@ -175,8 +187,9 @@ export function computePersonalizationScore(signals: PersonalizationSignals): nu
     signals.hoursSinceRelevantActivity === null
       ? 0
       : w.recency * Math.max(0, 1 - signals.hoursSinceRelevantActivity / RECENCY_WINDOW_HOURS);
+  const watchlist = signals.isWatched ? w.watchlist : 0;
 
-  return marketActivity + followedTrader + tradingInterest + engagement + recency;
+  return marketActivity + followedTrader + tradingInterest + engagement + recency + watchlist;
 }
 
 /** Plain-language reasons for a personalized discovery item — every reason maps directly
@@ -184,9 +197,11 @@ export function computePersonalizationScore(signals: PersonalizationSignals): nu
  *  Always returns at least one reason (falls back to the objective market-activity signal). */
 export function buildPersonalizationReasons(signals: PersonalizationSignals): string[] {
   const reasons: string[] = [];
-  if (signals.followedTraderLabel !== null) reasons.push(`${signals.followedTraderLabel} traded this recently`);
+  if (signals.followedTraderLabel !== null)
+    reasons.push(`${signals.followedTraderLabel} traded this recently`);
   if (signals.viewerHasTraded) reasons.push("You've traded this before");
   if (signals.viewerLikeCount > 0) reasons.push('You liked related activity');
+  if (signals.isWatched) reasons.push("You're watching this token");
   if (reasons.length === 0) reasons.push('Active on the market');
   return reasons;
 }
@@ -197,7 +212,8 @@ export type FeedReasonCode = 'FOLLOWED_TRADER' | 'GENERAL_DISCOVERY';
  *  docs/TRADER_INTELLIGENCE.md#personalized-feed for why this feed is a union (followed
  *  traders + general discovery) rather than a scored re-ranking. */
 export function feedReasonText(code: FeedReasonCode, traderLabel: string | null): string {
-  if (code === 'FOLLOWED_TRADER') return traderLabel ? `Because you follow ${traderLabel}` : 'From a trader you follow';
+  if (code === 'FOLLOWED_TRADER')
+    return traderLabel ? `Because you follow ${traderLabel}` : 'From a trader you follow';
   return 'Active on the market';
 }
 
@@ -238,6 +254,11 @@ export const TokenTraderConnectionSchema = z.object({
   recentTraders: z.array(TokenTraderSchema),
   activeTraders: z.array(TokenTraderSchema),
   recentLargeTrades: z.array(SocialActivitySchema),
+  /** Phase 6 — aggregate count of `TokenWatch` rows for this market only (a single-token
+   *  detail-page context, unlike bulk `MarketSummary` list views, which never carry this to
+   *  keep discover/search pages to one cheap query). Never reveals which users are watching
+   *  — see docs/PHASE6_RETENTION_SOCIAL.md#social-proof. */
+  watcherCount: z.number().int().min(0),
 });
 export type TokenTraderConnection = z.infer<typeof TokenTraderConnectionSchema>;
 
