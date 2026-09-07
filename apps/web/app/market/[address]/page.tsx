@@ -27,7 +27,7 @@ function isTimeframe(value: string | undefined): value is Timeframe {
 }
 
 /** Public, unauthenticated metadata for link previews — see
- *  docs/PHASE6_RETENTION_SOCIAL.md#shareable-pages. Only ever the same public fields
+ *  docs/PHASE6_RETENTION_SOCIAL.md#shareable-public-pages. Only ever the same public fields
  *  `fetchToken` already serves; a missing token falls back to a generic title rather than
  *  throwing, since Next calls this before the page itself would 404. */
 export async function generateMetadata({

@@ -119,7 +119,7 @@ addition is `generateMetadata` on both pages (Open Graph + Twitter card tags), c
 the same public data `fetchToken`/`fetchTraderProfile` already serve, so a shared link
 renders a real preview instead of a generic one.
 
-## Shareable trade/activity cards
+## Shareable activity cards
 
 No new per-swap detail route. `ShareButton` (`apps/web/components/social/ShareButton.tsx`)
 shares a link to the existing `/market/{tokenAddress}` page, where the trade is visible in
@@ -199,9 +199,9 @@ token both objectively active and followed-trader-relevant` in
 watching this token" reason whenever the signal fires, alongside every other fired reason —
 never replacing them.
 
-## Return loop ("what you missed")
+## Return loop
 
-Thin read over the _existing_ `Notification` table — no new event-sourcing model, no
+The "what you missed" surface: a thin read over the _existing_ `Notification` table — no new event-sourcing model, no
 duplicated feed. Two new fields on `User`:
 
 - `lastDiscoverySeenAt: DateTime?` — null until the first `POST /discovery/mark-seen` call.
@@ -221,7 +221,7 @@ longestStreakDays }`. `items` is `createdAt > lastDiscoverySeenAt`, bounded to
   items always reflect what happened _before_ this visit — marking seen only changes what the
   _next_ visit will show.
 
-### Streak calculation and race safety
+### Streaks
 
 `computeStreak` (`packages/domain/src/retention.ts`) is a pure function of `(previous state,
 now)`: same UTC calendar day as last seen → no change; the very next UTC day → `+1`; a gap of
@@ -287,6 +287,24 @@ subtle signal — see [Known limitations](#known-limitations).
   existing `DiscoveryService#cached` Redis cache-aside pattern is the documented next step.
 - Existing Phase 4 Redis pub/sub + SSE is reused as-is for `WATCHED_TOKEN_ACTIVITY` delivery
   — no second realtime system.
+
+## Web UX
+
+No unrelated redesign — every new surface reuses this app's existing primitives and
+patterns:
+
+- `WatchButton` mirrors `FollowButton`'s exact optimistic-toggle-with-rollback shape, in a
+  labeled variant (token detail page) and a compact icon-only star variant (watchlist rows)
+  — both carry a real `aria-label`/`aria-pressed`, never icon-only for a screen reader.
+- `ShareButton` reuses `NotificationBell`'s self-contained outside-click/Escape-to-close
+  dropdown pattern for its copy-link fallback panel.
+- The watchlist page (`/watchlist`) reuses `TokenIdentity`/`PriceChange`/`EmptyState`/
+  `Skeleton` — the same components the discover page and token detail page already use —
+  rather than a second set of token-row components. Its empty and loading states match
+  `TradeHistoryList`'s existing shape for a personal, session-gated list.
+- "What you missed" is a single quiet `Surface` banner, not a modal or a badge that would
+  compete with the notification bell's own unread indicator — shown once per visit only
+  when something is genuinely new, never a persistent nag.
 
 ## Retention mechanics that were deliberately NOT built
 

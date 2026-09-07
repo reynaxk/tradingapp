@@ -16,7 +16,7 @@ import { fetchTraderTokens } from '@/lib/discovery-api';
 export const revalidate = 15;
 
 /** Public, unauthenticated metadata for link previews — see
- *  docs/PHASE6_RETENTION_SOCIAL.md#shareable-pages. Only the same public fields
+ *  docs/PHASE6_RETENTION_SOCIAL.md#shareable-public-pages. Only the same public fields
  *  `fetchTraderProfile` already serves; a missing trader falls back to a generic title. */
 export async function generateMetadata({
   params,

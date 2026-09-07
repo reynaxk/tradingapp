@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 
 /**
  * Copy link + the native Web Share API where the browser has one — see
- * docs/PHASE6_RETENTION_SOCIAL.md#social-sharing. No social-media API integrations, no
+ * docs/PHASE6_RETENTION_SOCIAL.md#shareable-activity-cards. No social-media API integrations, no
  * image generation, no server-side screenshot rendering (explicitly out of scope): this
  * shares a link to the same public page anyone else can already reach unauthenticated.
  * Reuses NotificationBell's own self-contained toggle-dropdown pattern (outside-click +
