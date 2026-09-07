@@ -632,8 +632,13 @@ whatever session/wallet a browser has, which a Server Component structurally can
   Fomo cannot prevent a compromised wallet extension from lying to its own user, only
   ensure it always sends the wallet the *true* transaction it intends to have signed.
 - 0x's Allowance-Holder contract is trusted to execute the swap and fee split as
-  configured; Fomo verifies the transaction it receives back structurally
-  (`to`/`data`/`value` present) but does not decode and re-simulate the calldata itself.
+  configured. [Transaction integrity](#transaction-integrity)'s calldata match proves the
+  transaction that succeeded is byte-for-byte the one 0x prepared for this exact quote
+  (amounts, minimum output, and fee split all encoded in that calldata) — Fomo does not
+  additionally decode ERC-20 `Transfer` logs from the receipt to independently re-derive the
+  amounts actually received. A successful receipt for that exact, matched calldata is
+  trusted to mean 0x's own contract logic enforced its encoded minimum-output constraint;
+  Fomo does not re-implement or re-verify that enforcement itself.
 - The configured `CHAIN_RPC_URL` is trusted for receipt lookups; a malicious or compromised
   RPC endpoint could theoretically misreport a transaction's status. This is the same trust
   boundary Phase 1's ingestion already accepts for reading swap events.
