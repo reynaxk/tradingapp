@@ -21,6 +21,10 @@ export const EnvSchema = z.object({
   HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
   /** How often the market ingestion tick (price/liquidity refresh + swap backfill) runs. */
   MARKET_INGESTION_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  /** How often the Phase 3 trade-status sweep checks PENDING transactions for a real
+   *  on-chain receipt — see docs/TRADING.md#transaction-lifecycle. Independent of
+   *  apps/api's on-demand refresh; this is the backstop for trades nobody is watching. */
+  TRADE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -61,8 +61,8 @@ Wallet (address, displayName?, avatarUrl?, firstSeenAt)
    ↓
 Trader profile (GET /social/traders/:address — stats computed from `swaps`)
    ↓
-Optional authenticated User account (User.walletAddress, currently always null — see
-Authentication below)
+Optional authenticated User account (Wallet.userId, set only after cryptographic
+verification — see docs/TRADING.md#wallet-ownership)
 ```
 
 Rows are created **lazily by the ingestion worker**, never by a user action — following an
@@ -144,10 +144,11 @@ on first paint by construction. `FollowButton` resolves the real state client-si
 mount (`checkFollowStatus`), using whatever session the browser already has — never
 creating a new one just to check.
 
-**Upgrade path, not built here:** `User.walletAddress` exists and is ready to receive a
-verified wallet link the moment real SIWE ships — no further migration needed. Until then
-it's `null` for every account Phase 2 creates, and `TraderProfile.followingCount` (wallets a
-trader's linked account follows) is correspondingly always 0 in practice.
+**Built in Phase 3:** real SIWE-style wallet verification now populates `Wallet.userId` —
+see docs/TRADING.md#wallet-ownership for the challenge/signature flow. Every account Phase
+2 itself creates still starts with no verified wallet, and `TraderProfile.followingCount`
+(wallets a trader's linked account follows) is 0 until that account both verifies a wallet
+and follows someone.
 
 ## Pagination
 

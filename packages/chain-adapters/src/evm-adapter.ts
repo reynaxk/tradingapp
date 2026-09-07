@@ -31,6 +31,38 @@ export class EvmChainDataProvider implements ChainDataProvider {
     }
   }
 
+  /**
+   * The on-chain outcome of a submitted transaction — the sole authority for whether a
+   * Phase 3 trade confirmed or reverted (see docs/TRADING.md#transaction-lifecycle). `null`
+   * means "no receipt yet" — a transaction still pending and an RPC hiccup look the same
+   * from here on purpose: neither is grounds to guess a status, only to check again later.
+   */
+  async getTransactionReceiptStatus(hash: string): Promise<'success' | 'reverted' | null> {
+    try {
+      const receipt = await this.client.getTransactionReceipt({ hash: hash as `0x${string}` });
+      return receipt.status;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The real, on-chain fields of a transaction (sender, destination, value, calldata) —
+   * not just its receipt status. See docs/TRADING.md#transaction-integrity: a receipt only
+   * proves *some* transaction with this hash succeeded, never that it's the specific trade
+   * a quote described. `null` for "not found" (not yet propagated to this RPC, or genuinely
+   * doesn't exist on this chain) — never fabricated, and callers must treat that as
+   * inconclusive, not as a pass.
+   */
+  async getTransactionDetails(hash: string): Promise<{ from: string; to: string | null; value: bigint; data: string } | null> {
+    try {
+      const tx = await this.client.getTransaction({ hash: hash as `0x${string}` });
+      return { from: tx.from, to: tx.to ?? null, value: tx.value, data: tx.input };
+    } catch {
+      return null;
+    }
+  }
+
   async getTokenMetadata(contractAddress: string): Promise<TokenMetadata> {
     const address = contractAddress as `0x${string}`;
     const [symbol, name, decimals] = await Promise.allSettled([

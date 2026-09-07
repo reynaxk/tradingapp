@@ -24,4 +24,9 @@ describe('workers env schema', () => {
   it('rejects a malformed RPC URL rather than silently accepting it', () => {
     expect(() => parseEnv(EnvSchema, { ...valid, CHAIN_RPC_URL: 'not-a-url' })).toThrow();
   });
+
+  it('defaults TRADE_SWEEP_INTERVAL_SECONDS to 30 and accepts an override', () => {
+    expect(parseEnv(EnvSchema, valid).TRADE_SWEEP_INTERVAL_SECONDS).toBe(30);
+    expect(parseEnv(EnvSchema, { ...valid, TRADE_SWEEP_INTERVAL_SECONDS: '90' }).TRADE_SWEEP_INTERVAL_SECONDS).toBe(90);
+  });
 });

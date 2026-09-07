@@ -5,6 +5,7 @@ import './globals.css';
 // time (see lib/env.ts), and the root layout is the one module every request loads, so
 // this is where "fail fast on a bad env var" actually gets wired into the app's boot path.
 import '@/lib/env';
+import { Providers } from './providers';
 
 const manrope = Manrope({ subsets: ['latin'], variable: '--font-manrope', display: 'swap' });
 const sourceSerif = Source_Serif_4({
@@ -26,7 +27,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${manrope.variable} ${sourceSerif.variable} ${jetbrainsMono.variable}`}>
-      <body className="font-body antialiased">{children}</body>
+      <body className="font-body antialiased">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

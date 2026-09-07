@@ -6,6 +6,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { OptionalAuthGuard } from './guards/optional-auth.guard';
 import { IdentityController } from './identity.controller';
 import { IdentityService } from './identity.service';
+import { WalletService } from './wallet.service';
 
 /**
  * Owns users and session auth — see docs/SOCIAL.md#authentication and
@@ -24,7 +25,7 @@ import { IdentityService } from './identity.service';
     }),
   ],
   controllers: [IdentityController],
-  providers: [IdentityService, JwtAuthGuard, OptionalAuthGuard],
-  exports: [IdentityService, JwtAuthGuard, OptionalAuthGuard],
+  providers: [IdentityService, WalletService, JwtAuthGuard, OptionalAuthGuard],
+  exports: [IdentityService, WalletService, JwtAuthGuard, OptionalAuthGuard],
 })
 export class IdentityModule {}

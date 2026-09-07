@@ -1,16 +1,16 @@
 # Testing
 
-## What exists as of Phase 2
+## What exists as of Phase 3
 
 | Package/app | Runner | What's covered |
 | --- | --- | --- |
-| `packages/domain` | Vitest | Zod schema round-trips; `parseEnv`'s error formatting; the Discovery Score formula and staleness gate (`market.test.ts`); EVM address validation/normalization (`wallet.test.ts`); activity-cursor encode/decode (including malformed input) and the Trending Score's gates/ordering (`social.test.ts`). |
-| `packages/chain-adapters` | Vitest (unit) | `EvmChainDataProvider` and `uniswap-v3-math.ts`'s price/liquidity/market-cap math — the latter checked against real numbers observed on a live pool, not synthetic fixtures. |
-| `packages/chain-adapters` | Vitest (**live** integration) | `UniswapV3PoolReader` against the real Base mainnet RPC and a real, live Uniswap V3 pool, including that a failed `eth_getLogs` call returns `null` (never a fabricated `[]`) and that `sender`/`recipient` decode correctly for trader identity — see below. |
-| `apps/workers` | Vitest | Env schema validation; `MarketIngestionService#ingestSwaps` (mocked Prisma + mocked `UniswapV3PoolReader`) — cursor-advancement safety on an RPC failure vs. a genuine empty result, wallet upsert ordering (before the swap that references it), trader-vs-sender attribution, the realtime Redis ping (and that its failure doesn't fail the tick), and the 24h rollup decay/null-vs-zero rules including the two new Phase 2 activity stats. |
-| `apps/api` | Jest (unit) | Env schema validation (including `JWT_SECRET`); the global exception filter's production-vs-development behavior; `IdentityService` token issuance/verification (a token signed with a different secret, a structurally invalid token, an expired token, and a token naming a user that no longer exists are all rejected). |
-| `apps/api` | Jest (e2e) | `GET /health`, the full `/market` route family, and the full `/social` + `/identity` route family — session issuance, activity pagination (including a malformed cursor never 400ing), trader profiles/404s, follow/unfollow idempotency and cross-session isolation, like/unlike idempotency, the following feed, trending, and search — all against a **live** Postgres and Redis. See below. |
-| `apps/web` | Vitest | `lib/env.ts`'s validation (both the server and the new client env schema); `lib/format.ts`'s formatting, including `formatRelativeTime` and the locale bug this caught (see below); component tests (`@testing-library/react` + jsdom, new in Phase 2) for `ActivityCard`, `FollowButton` (including optimistic rollback and the client-side follow-state resolution a Server Component can't do itself), `ActivityFeed` (loading/empty states, live-status transitions, the new-activity reveal/dedupe flow, load-more pagination), and `ActivityFeedTabs` (the Following tab's no-session/loading/loaded/error states). |
+| `packages/domain` | Vitest | Zod schema round-trips; `parseEnv`'s error formatting; the Discovery Score formula and staleness gate (`market.test.ts`); EVM address validation/normalization (`wallet.test.ts`); activity-cursor encode/decode (including malformed input) and the Trending Score's gates/ordering (`social.test.ts`); EIP-4361 message construction (`wallet-auth.test.ts`); exact bps fee/min-output math, slippage-bounds validation, price-impact classification, quote-expiry, defensive `unsignedTx` parsing, and `transactionMatchesQuote`'s exact sender/destination/value/calldata matching — including case-insensitive address/calldata comparison and rejection of a contract-creation (`to: null`) transaction (`trading.test.ts`). |
+| `packages/chain-adapters` | Vitest (unit) | `EvmChainDataProvider` and `uniswap-v3-math.ts`'s price/liquidity/market-cap math — the latter checked against real numbers observed on a live pool, not synthetic fixtures. `verifyEvmSignature` (`signature.test.ts`) against **real** ECDSA signatures from a well-known test keypair — valid/tampered/wrong-address/malformed all covered, never mocked crypto. `getTransactionDetails` returns `null` (never fabricated) when the RPC is unreachable. |
+| `packages/chain-adapters` | Vitest (**live** integration) | `UniswapV3PoolReader` against the real Base mainnet RPC and a real, live Uniswap V3 pool, including that a failed `eth_getLogs` call returns `null` (never a fabricated `[]`) and that `sender`/`recipient` decode correctly for trader identity — see below. `EvmChainDataProvider#getTransactionDetails` (`evm-adapter.integration.test.ts`) against a real, recently-mined transaction, proving the sender/destination/calldata decode actually works against a real transaction — the read Phase 3's transaction-integrity check depends on. |
+| `apps/workers` | Vitest | Env schema validation; `MarketIngestionService#ingestSwaps` (mocked Prisma + mocked `UniswapV3PoolReader`) — cursor-advancement safety on an RPC failure vs. a genuine empty result, wallet upsert ordering (before the swap that references it), trader-vs-sender attribution, the realtime Redis ping (and that its failure doesn't fail the tick), and the 24h rollup decay/null-vs-zero rules including the Phase 2 activity stats. `TradeSweepService` (`sweep.test.ts`) — confirmed/failed/left-pending/expired transitions, chain-id scoping, that one bad row's RPC error never aborts the rest of the batch, and — independently from `apps/api`'s own check — that a successful receipt whose on-chain details don't match the persisted quote is marked FAILED, never CONFIRMED. |
+| `apps/api` | Jest (unit) | Env schema validation (including `JWT_SECRET` and Phase 3's chain/aggregator/fee vars); the global exception filter's production-vs-development behavior; `IdentityService` token issuance/verification. `WalletService` — challenge issuance, verification with real signatures (valid/wrong-account/tampered), single-use nonce consumption (including the concurrent-double-verify race), expiry, and cross-session rejection. `SafetyService`/`QuoteService`/`ZeroExSwapRouter` — wallet-ownership gating, input validation, honest quote-unavailable handling, the provider-slippage-floor sanity check, fee sourcing (server config only, never the request). `TransactionService` — submission idempotency on both `quoteId` and `(chainId, txHash)`; status refresh driven only by a real receipt; expired-quote rejection at submission; wallet re-verification at submission (unlinked, re-verified to another account, or verification cleared); on-chain sender/destination/value/calldata match enforced both at submission (best-effort) and before every CONFIRMED transition (authoritative) — see docs/TRADING.md#transaction-integrity. |
+| `apps/api` | Jest (e2e) | `GET /health`, the full `/market`, `/social` + `/identity`, and `/trade` route families — session issuance, activity pagination, trader profiles/404s, follow/like idempotency, wallet challenge/verify/list/unlink with real signatures (including replay protection, cross-user rejection, and challenge rate-limiting — run against an isolated app instance, see below), quote/transaction authorization boundaries, an honest 422 in place of a fabricated quote, transaction idempotency, trade-history scoping (including the global `ValidationPipe` rejecting an unrecognized `?userId=` outright), expired-quote and unlinked-wallet submission rejection, and — using real, live, already-successful Base mainnet transaction hashes fetched at test time — that an unrelated transaction can neither be submitted against a quote it doesn't match nor ever reach CONFIRMED for one, all against a **live** Postgres and Redis. See below. |
+| `apps/web` | Vitest | `lib/env.ts`'s validation (server, client, and Phase 3's chain/WalletConnect vars); `lib/format.ts`'s formatting; `lib/session-client.ts` (token persistence, error-message parsing preferring the API's own message); `lib/wallet-client.ts`/`lib/trading-client.ts` (request shape, 404-as-null for transaction lookups); component tests for `ActivityCard`, `FollowButton`, `ActivityFeed`, `ActivityFeedTabs`, `ConnectWalletButton` (mocked wagmi — connect/disconnect/wrong-network/switch-chain), `SlippageControl` (bounds enforcement), and `QuoteSummary` (renders exactly what's in the quote, including price-impact/approval warnings, never a "safe" claim). |
 | `packages/db` | — | No unit tests; correctness is verified by CI actually applying every migration (see below), not by mocking Prisma. |
 
 ## Running tests locally
@@ -39,14 +39,22 @@ offline, skip it with `vitest run --exclude '**/*.integration.test.ts'`.
 
 There's no live database in every environment this project gets built in, so migration
 correctness isn't "trust me" — CI applies the actual migration SQL (Phase 0's, Phase 1's,
-and Phase 2's) to a real, disposable Postgres+Timescale service container on every run
-(`prisma migrate deploy`, see `.github/workflows/ci.yml`) before running the e2e suite
-against it. If a migration is broken, CI fails there, not later. Phase 1's migration also
-converts `candles` into a real Timescale hypertable (`create_hypertable`) as part of that
-same file — see `packages/db/prisma/migrations/20260904130000_market_data/migration.sql`.
+Phase 2's, and Phase 3's) to a real, disposable Postgres+Timescale service container on
+every run (`prisma migrate deploy`, see `.github/workflows/ci.yml`) before running the e2e
+suite against it. If a migration is broken, CI fails there, not later. Phase 1's migration
+also converts `candles` into a real Timescale hypertable (`create_hypertable`) as part of
+that same file — see `packages/db/prisma/migrations/20260904130000_market_data/migration.sql`.
 Phase 2's migration (`20260906120000_social_layer`) is plain tables/columns, no hypertable
 work — every new/altered column is nullable, so it applies cleanly against a database that
-already has Phase 1 data in it, not just a fresh one.
+already has Phase 1 data in it. Phase 3's migration (`20260906180000_wallet_trading`) drops
+`users.wallet_address` (always `null` in every real Phase 2 deployment — see
+`docs/SOURCE_OF_TRUTH.md`) and adds the wallet-ownership/trading tables; every new column on
+an existing table is nullable, so it too applies cleanly on top of live Phase 1/2 data.
+**Not re-verified locally against a real database in this build's sandbox** — no Docker was
+available to run `docker compose up -d`, no Redis was reachable, and the one native
+Postgres install present had credentials this session didn't know. Migration correctness
+for Phase 3 rests on the same CI step described above, not on a local run — flagged
+honestly here rather than claimed as verified.
 
 ## What actually caught bugs during development
 
@@ -133,14 +141,87 @@ Worth recording, since it's the point of testing rather than a formality:
   (matching every other package), so tests leaked DOM state across cases (`getByRole`
   matching multiple buttons) until `vitest.setup.ts` called `cleanup()` explicitly.
 
+## What Phase 3 caught during development
+
+- `apps/api` never had `@fomo/chain-adapters` as a declared dependency — Phase 1/2 only
+  used it from `apps/workers`. `WalletService` (signature verification) and
+  `TransactionService` (receipt reads) both need it directly; `pnpm typecheck` failed with
+  `Cannot find module '@fomo/chain-adapters'` immediately, before either service was ever
+  exercised at runtime.
+- A quote/transaction-fixture test private key one character short of 64 hex chars
+  (`invalid private key, expected hex or 32 bytes, got string`) — the same class of mistake
+  `docs/TESTING.md` already recorded for hand-typed EVM *addresses* in Phase 2, this time in
+  a hand-typed *private key*. Replaced with `generatePrivateKey()` rather than another
+  hand-typed literal, so this specific mistake can't recur in this file.
+- The same malformed-hex-length mistake showed up a third time, in a `PLATFORM_FEE_RECIPIENT_ADDRESS`
+  test fixture reused verbatim from an existing repo-wide test address that happened to be
+  38, not 40, hex characters everywhere else it appears (those other call sites never
+  validate address *length* strictly, so it went unnoticed there) — caught only here because
+  `PLATFORM_FEE_RECIPIENT_ADDRESS` is the first field in this codebase with a real regex
+  requiring exactly 40 hex characters. Fixed in both `env.spec.ts` and `ci.yml`, without
+  touching the other, non-length-sensitive call sites.
+- Adding `quoteAddress`/`quoteDecimals` to `MarketSummary` and `SocialActivity.token`
+  (needed so the trading UI can request a quote without a second round-trip) is additive at
+  the schema level, but three existing `apps/web` component test fixtures constructed those
+  shapes as full object literals and failed to typecheck once the new required fields
+  existed — a reminder that "additive" at the database layer still means "find every
+  hand-written fixture" at the type layer.
+- `wagmi/connectors`' barrel file unconditionally re-exports a `coinbaseWallet`/`baseAccount`
+  connector that pulls in `@coinbase/cdp-sdk`'s optional payments code, which statically
+  imports `@x402/*` packages this app never installs. Not calling `coinbaseWallet()` doesn't
+  help — ES module imports are resolved for the whole file graph before tree-shaking runs —
+  so `next build` failed with `Module not found` even though the connector was never
+  constructed. Fixed with a targeted `webpack.IgnorePlugin` in `next.config.mjs`; caught only
+  by actually running `next build`, not by lint or typecheck (both passed cleanly first).
+- A `quote.service.spec.ts` assertion compared `expiresAt - createdAt` for exact equality
+  against `quoteTtlSeconds * 1000`, but the two timestamps come from separate `Date.now()`
+  calls a few lines apart in the mocked test setup — an occasional 1ms real-clock drift
+  failed the test nondeterministically. Fixed with a small tolerance instead of exact
+  equality.
+- **The original `trading.e2e-spec.ts` rate-limit test broke the rest of the file.**
+  `POST /identity/wallet/challenge` is throttled to 10/60s; the test fired 12 requests at it
+  to prove a 429 eventually appears, sharing the *same* `app` instance (and so the same
+  in-memory throttler bucket) as roughly 15 other calls to that same route elsewhere in the
+  file (mostly via the `linkVerifiedWallet()` helper nearly every quote/transaction test
+  depends on). Once the rate-limit test ran, that bucket stayed over its limit for the rest
+  of the file's 60-second window, so every later `linkVerifiedWallet()` call would have
+  started 429ing instead of succeeding — the test wasn't just testing the limit, it was
+  quietly consuming a shared resource every other test needed. Fixed by moving it into its
+  own top-level `describe` block with a dedicated Nest app instance (its own throttler
+  storage) — production throttling config is untouched; only the test's blast radius is
+  contained. Caught by re-reading what the test actually shares with the rest of the file,
+  not by a failure in this sandbox (no live Postgres/Redis here to run it against).
+- **A receipt's "success" status was being treated as sufficient to confirm a trade**, in
+  both `TransactionService#refreshStatus` and `apps/workers`' independent sweep — neither
+  checked that the transaction's actual on-chain sender, destination, value, and calldata
+  matched the quote it was being confirmed against. An arbitrary, unrelated, but genuinely
+  successful transaction hash (a user's own past transaction, or any public one) could have
+  been submitted and, once mined, would eventually have been marked CONFIRMED — fabricating
+  a trade that never happened as quoted. Also found: `submitTransaction` never re-checked
+  quote expiry or current wallet-verification status, both frozen at quote-creation time.
+  Fixed with `transactionMatchesQuote` (`packages/domain/src/trading.ts`) and
+  `EvmChainDataProvider#getTransactionDetails` — see docs/TRADING.md#transaction-integrity.
+  Not caught by any existing test (the existing unit tests mocked the receipt call and never
+  modeled a *wrong* transaction behind a real hash); found by an explicit security audit of
+  `submitTransaction`/`refreshStatus` against the original non-custodial requirements.
+
 ## What's deliberately not tested yet
 
-No wallet-signing or trading-execution tests exist because that surface doesn't exist yet
-(see the roadmap in the architecture spec) — Phase 2 is deliberately social-only. Within
-Phase 2 itself: comments, reposts, and bookmarks have no tests because they aren't
+Within Phase 2: comments, reposts, and bookmarks have no tests because they aren't
 implemented (see `docs/SOCIAL.md`'s known limitations); the notification module remains
 the empty boundary it was in Phase 0/1. `MarketIngestionService`'s Redis publish path is
 tested for "doesn't fail the tick," not for the Redis client's own reconnect behavior —
 that's `ioredis`'s contract, not this codebase's, same reasoning Phase 0 applied to the
 health-check Redis client. Adding tests ahead of the feature they cover is its own kind of
 premature complexity.
+
+Within Phase 3 (see `docs/TRADING.md#known-limitations` for the full list): no test
+exercises a real WalletConnect mobile-pairing session (the connector is wired but requires
+an external project id this environment doesn't have); no test verifies an ERC-1271
+smart-contract wallet signature (the adapter deliberately doesn't support one yet, and
+correctly 401s rather than silently mis-verifying); and — most importantly — **no test in
+this repository ever broadcasts a real, funded transaction**. Every signature in
+`packages/chain-adapters`/`apps/api` tests is real ECDSA over a fresh, never-funded keypair;
+every quote/transaction test against the real 0x endpoint (the e2e suite, in CI) relies on
+CI's placeholder API key correctly failing upstream, which this codebase turns into an
+honest `422` rather than treating as a crash.

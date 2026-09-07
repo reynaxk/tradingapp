@@ -19,6 +19,8 @@ export function toMarketSummary(row: MarketRow, discoveryScore?: number | null):
     decimals: row.token.decimals,
     logoUrl: row.token.logoUrl,
     quoteSymbol: row.quoteToken.symbol,
+    quoteAddress: row.quoteToken.contractAddress,
+    quoteDecimals: row.quoteToken.decimals,
     dex: row.dex,
     feeTier: row.feeTier,
     priceUsd: toNumber(row.priceUsd),

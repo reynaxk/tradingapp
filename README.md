@@ -3,37 +3,41 @@
 A social crypto discovery and trading platform. Phase 0 built the production foundation;
 Phase 1 added the first real product surface — market discovery for a curated set of real
 tokens on Base, with genuine on-chain price/liquidity/volume, not mock data (see
-`docs/MARKET_DATA.md`). **Phase 2 adds the social layer** — real trading activity as a live
+`docs/MARKET_DATA.md`). Phase 2 added the social layer — real trading activity as a live
 feed, wallet-first trader identity and profiles, follows, and activity-based trending — on
-the same indexed data, so people can see what other traders are actually doing. See
-`docs/SOCIAL.md` for exactly how, and the architecture spec for the product vision and
-roadmap beyond this.
+the same indexed data. **Phase 3 closes the loop**: connect a wallet, prove ownership with a
+real signature (SIWE), get a real executable quote, review it, sign and broadcast the
+transaction yourself, and watch it confirm — all non-custodially, Fomo's backend never
+holding a key or signing anything. See `docs/TRADING.md` for exactly how, `docs/SOCIAL.md`
+for Phase 2's, and the architecture spec for the product vision and roadmap beyond this.
 
-Not yet built: wallet signing/trading execution, verified wallet login (SIWE), comments,
-notifications delivery, multi-chain support. See [`docs/`](./docs) and the roadmap for when
-each lands.
+Not yet built: comments, notifications delivery, multi-chain execution, email/passkey login.
+See [`docs/`](./docs) and the roadmap for when each lands.
 
 ## Repository structure
 
 ```text
 apps/
-  web/        Next.js app — Discover (/), token detail (/market/[address]), and trader
-              profiles (/trader/[address]) are real. The live activity feed and follow/like
-              mutations are the one place the browser talks to the API directly — see
-              docs/SOCIAL.md#realtime.
-  api/        NestJS modular monolith — Market (read-only), Identity (anonymous sessions),
-              and Social (activity/trending/follows/likes) are real; Trading · Notifications
-              are still empty module boundaries.
+  web/        Next.js app — Discover (/), token detail (/market/[address]), trader profiles
+              (/trader/[address]), and (Phase 3) trade history (/trades, /trades/[id]) are
+              real. The live activity feed, follow/like mutations, and all wallet/trading
+              calls are the places the browser talks to the API directly — see
+              docs/SOCIAL.md#realtime and docs/TRADING.md.
+  api/        NestJS modular monolith — Market (read-only), Identity (anonymous sessions +
+              Phase 3 wallet-ownership verification), Social (activity/trending/follows/
+              likes), and Trading (quotes/transactions/history, see docs/TRADING.md) are
+              real; Notifications remains an empty module boundary.
   workers/    Independently deployable process. Runs real market-data ingestion on a
-              timer (apps/workers/src/market/) — see docs/MARKET_DATA.md — and now also
-              captures trader identity and publishes a realtime activity ping; see
-              docs/SOCIAL.md.
+              timer (apps/workers/src/market/) — see docs/MARKET_DATA.md — captures trader
+              identity and publishes a realtime activity ping (docs/SOCIAL.md), and (Phase
+              3) sweeps PENDING trades for a real on-chain receipt (apps/workers/src/trading/).
 
 packages/
   config/          Shared tsconfig, ESLint, and Tailwind presets.
   domain/          Shared TypeScript types, Zod schemas, parseEnv(), the Discovery Score /
-                    staleness logic market ranking is built on, and (Phase 2) trader
-                    identity types, activity-cursor pagination, and the Trending Score.
+                    staleness logic market ranking is built on, trader identity types,
+                    activity-cursor pagination, the Trending Score (Phase 2), and (Phase 3)
+                    the SIWE message builder and fee/slippage/price-impact math.
   db/              Prisma schema, migrations, and a shared PrismaClient singleton.
   ui/              Shared React components (Button, Surface) and the `cn()` helper.
   chain-adapters/  ChainDataProvider (generic EVM reads) + UniswapV3PoolReader (Phase 1's
@@ -63,7 +67,7 @@ cp apps/workers/.env.example apps/workers/.env
 # The default CHAIN_RPC_URL (Base's public RPC) works with no signup — fine for local dev.
 
 docker compose up -d              # Postgres (+ TimescaleDB) and Redis
-pnpm db:migrate:deploy            # applies both migrations, including the Phase 1 one
+pnpm db:migrate:deploy            # applies every migration, Phase 0 through Phase 3
 pnpm dev                          # runs web, api, and workers together, via Turborepo
 ```
 
@@ -102,10 +106,14 @@ Phase 0's migration creates `chains`, `tokens`, `token_markets`. Phase 1's adds 
 `candles`, `ingestion_cursors`, and price/liquidity/volume columns on `token_markets`.
 Phase 2's adds `wallets`, `users`, `follows`, `activity_likes`, plus
 `trader_address`/`sender_address` on `swaps` and `trade_count_24h`/`unique_traders_24h` on
-`token_markets` — all additive and nullable where the fact predates the migration, per
-`docs/SOCIAL.md`. See `docs/SOURCE_OF_TRUTH.md` for why token metadata fields are nullable
-rather than defaulted and why price/liquidity live on `token_markets` rather than `tokens`,
-`docs/MARKET_DATA.md` for the Phase 1 tables specifically, and `docs/SOCIAL.md` for Phase 2's.
+`token_markets`. Phase 3's (`20260906180000_wallet_trading`) adds `wallet_challenges`,
+`trade_quotes`, `trade_transactions`, links a `Wallet` to a `User` only after signature
+verification (`wallets.user_id`/`verified_at`), and drops the always-`null`
+`users.wallet_address` column Phase 2 never actually populated — all additive/nullable
+where the fact predates the migration, per `docs/SOCIAL.md`/`docs/TRADING.md`. See
+`docs/SOURCE_OF_TRUTH.md` for why token metadata fields are nullable rather than defaulted
+and why price/liquidity live on `token_markets` rather than `tokens`, `docs/MARKET_DATA.md`
+for the Phase 1 tables, `docs/SOCIAL.md` for Phase 2's, and `docs/TRADING.md` for Phase 3's.
 
 ## Testing
 
@@ -131,8 +139,9 @@ All three run through Turborepo, so each only re-runs for packages that actually
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`:
 install → lint → typecheck → validate & apply migrations (against real Postgres/Redis
-service containers) → unit tests → API e2e tests (health + the full `/market` route
-family, seeded against that same live database) → build. Any failure blocks the merge.
+service containers) → unit tests → API e2e tests (health, `/market`, `/social` +
+`/identity`, and `/trade` — the last two with real ECDSA signatures and a placeholder 0x
+API key, seeded against that same live database) → build. Any failure blocks the merge.
 
 ## Deployment
 
@@ -141,16 +150,19 @@ their `Dockerfile`s), Neon (Postgres), Upstash (Redis).
 
 ## Architectural boundaries
 
-- **`apps/web` never reads the database or a blockchain RPC directly** — only the API,
-  and only in Server Components/Route Handlers (`API_BASE_URL` is server-only, never sent
-  to the browser). The one deliberate exception is Phase 2's live activity stream and
-  follow/like mutations, which structurally require a real browser-to-API connection —
-  see `docs/SOCIAL.md#realtime` and the separate, explicitly-public `NEXT_PUBLIC_API_BASE_URL`.
-- **`apps/api` is a modular monolith, not microservices.** `Identity`, `Social`,
-  `Trading`, and `Notifications` are separate Nest modules, still empty; `Market` is the
-  first one with real logic, and it's read-only — it never writes, only the worker does.
-  Same internal boundary as always, so any module can become its own service later
-  without a rewrite — see the architecture spec.
+- **`apps/web` never reads the database directly** — only the API, and only in Server
+  Components/Route Handlers for read-only data (`API_BASE_URL` is server-only, never sent
+  to the browser). The deliberate exceptions are Phase 2's live activity stream and
+  follow/like mutations, and Phase 3's wallet-ownership and trading calls (all of which
+  structurally require a real browser-to-API connection, and the browser's own wagmi
+  connection reading the connected wallet's chain/balance directly) — see
+  `docs/SOCIAL.md#realtime`, `docs/TRADING.md`, and the separate, explicitly-public
+  `NEXT_PUBLIC_API_BASE_URL`/`NEXT_PUBLIC_CHAIN_RPC_URL`.
+- **`apps/api` is a modular monolith, not microservices.** `Identity` (now including
+  Phase 3 wallet-ownership), `Social`, and `Trading` all have real logic; `Notifications`
+  remains an empty module boundary; `Market` is read-only — it never writes, only the
+  worker does. Same internal boundary as always, so any module can become its own service
+  later without a rewrite — see the architecture spec.
 - **`apps/workers` is deployed independently from `apps/api`** from day one, because
   indexing scales on a different axis (chain event volume) than request-serving
   (concurrent users).
@@ -159,7 +171,8 @@ their `Dockerfile`s), Neon (Postgres), Upstash (Redis).
 - **No table is a second source of truth for a fact another table already owns** — see
   `docs/SOURCE_OF_TRUTH.md`.
 - **The backend never custodies a private key or signs a transaction** — see
-  `docs/WALLET_SECURITY.md`.
+  `docs/WALLET_SECURITY.md` and, for how Phase 3's trading flow specifically upholds this,
+  `docs/TRADING.md#non-custodial-security`.
 
 ## Full architecture
 

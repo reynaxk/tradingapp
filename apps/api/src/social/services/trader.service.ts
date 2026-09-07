@@ -39,9 +39,11 @@ export class TraderService {
         select: { blockTimestamp: true },
       }),
       prisma.follow.count({ where: { walletAddress: normalized } }),
-      // Only ever non-zero once a User has linked this exact wallet and made follows of
-      // their own — see the User.walletAddress comment in schema.prisma.
-      prisma.follow.count({ where: { user: { walletAddress: normalized } } }),
+      // Only ever non-zero once this wallet has been verified (Wallet.userId set — see
+      // docs/TRADING.md#wallet-ownership) and that account has made follows of its own.
+      // `userId` is a non-nullable column, so Prisma's filter type (correctly) won't accept
+      // `null` — short-circuit instead of querying when this wallet is unclaimed.
+      wallet.userId ? prisma.follow.count({ where: { userId: wallet.userId } }) : Promise.resolve(0),
       this.follows.isFollowing(viewerUserId, normalized),
     ]);
 
@@ -81,22 +83,28 @@ export class TraderService {
     return { items: page.map((f) => ({ userId: f.userId, followedAt: f.createdAt.toISOString() })), nextCursor };
   }
 
-  /** Wallets this trader's linked User account follows. Almost always empty in Phase 2
-   *  (wallet-linking isn't implemented yet — see docs/WALLET_SECURITY.md) but implemented
-   *  for real so it needs no contract change once linking ships. */
+  /** Wallets this trader's linked User account follows. Empty until this wallet has been
+   *  verified (see docs/TRADING.md#wallet-ownership) and that account has followed
+   *  someone — implemented for real from Phase 2 onward so it needed no contract change
+   *  once linking shipped. */
   async getFollowing(
     address: string,
     rawCursor: string | undefined,
     limit: number,
   ): Promise<CursorPage<{ address: string; displayName: string | null; avatarUrl: string | null }>> {
     const normalized = normalizeEvmAddress(address);
-    const wallet = await prisma.wallet.findUnique({ where: { address: normalized }, select: { address: true } });
+    const wallet = await prisma.wallet.findUnique({ where: { address: normalized }, select: { userId: true } });
     if (!wallet) throw new NotFoundException(`No tracked trader for wallet "${address}"`);
+
+    // `userId` is non-nullable on Follow, so there's nothing to list at all for an
+    // unclaimed wallet — skip the query rather than pass `null` to a filter that can't
+    // accept it.
+    if (!wallet.userId) return { items: [], nextCursor: null };
 
     const cursor = rawCursor ? decodeFollowCursor(rawCursor) : null;
     const rows = await prisma.follow.findMany({
       where: {
-        user: { walletAddress: normalized },
+        userId: wallet.userId,
         ...(cursor ? { createdAt: { lt: new Date(cursor.createdAt) } } : {}),
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],

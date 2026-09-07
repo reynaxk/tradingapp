@@ -10,8 +10,11 @@ to, but because it structurally cannot:
 - **No seed phrases are ever collected, transmitted, or stored.**
 - **The server never signs a transaction on a user's behalf.** Signing happens exclusively
   in the user's own wallet (browser extension, mobile wallet, or WalletConnect session).
-  `apps/api`'s future `TradingModule` (Phase 3) will build unsigned transactions and hand
-  them to the client — it will never hold a signing key.
+  `apps/api`'s `TradingModule` (built in Phase 3 — see `docs/TRADING.md`) builds unsigned
+  transactions and hands them to the client; it never holds a signing key. The client
+  (`apps/web/components/trading/TradePanel.tsx`) hands that unsigned transaction to wagmi's
+  `sendTransaction`/`writeContract`, which delegate to whatever wallet is connected — Fomo's
+  own code is never in the signing path.
 
 If a future change ever appears to require server-side signing or key storage, that is a
 signal the design is wrong, not a signal to add a secrets vault for keys. Stop and
@@ -41,16 +44,21 @@ registration. See `docs/SOURCE_OF_TRUTH.md` and the architecture spec for the fu
 `wallets` shape; Phase 0 only needs this principle to not be foreclosed by today's schema,
 which it isn't — `chains`/`tokens`/`token_markets` don't reference a `users` table at all.
 
-## Login, when it exists (Phase 2)
+## Login, as actually built
 
-Two independent ways in, issuing the same session type so downstream code never branches
-on how a session started:
+Phase 2 shipped one way in — `POST /identity/session` mints an anonymous session with no
+wallet-ownership claim at all (see `docs/SOCIAL.md#authentication`). Phase 3 added the
+second, exactly as this section originally planned:
 
-- **Email/passkey**, via a managed auth provider — password handling, MFA, and bot
-  protection are a security liability not worth building from scratch.
 - **Sign-In With Ethereum (EIP-4361)** — proves wallet ownership via a signed message, not
   a password. Still never touches a private key server-side; the signature is produced by
-  the wallet, the server only verifies it.
+  the wallet, the server only verifies it (`packages/chain-adapters/src/signature.ts`,
+  wrapping viem's `verifyMessage`). See `docs/TRADING.md#wallet-ownership` for the full
+  challenge/verify flow.
+
+**Email/passkey via a managed auth provider remains unbuilt and unscheduled.** Nothing in
+Phase 3 needed it — trading only ever required proving control of a wallet, which SIWE
+already does — so it stays a documented option rather than a committed one.
 
 ## What Phase 0 already enforces
 

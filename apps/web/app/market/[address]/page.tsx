@@ -10,6 +10,7 @@ import { StaleBadge } from '@/components/market/StaleBadge';
 import { TimeframeTabs } from '@/components/market/TimeframeTabs';
 import { TokenIdentity } from '@/components/market/TokenIdentity';
 import { ActivityFeed } from '@/components/social/ActivityFeed';
+import { TradeButton } from '@/components/trading/TradeButton';
 import { formatCompactUsd, formatDateTime, formatPrice, truncateAddress } from '@/lib/format';
 import { fetchToken, fetchTokenHistory } from '@/lib/market-api';
 import { fetchGlobalActivity } from '@/lib/social-api';
@@ -60,6 +61,33 @@ export default async function TokenDetailPage({
           </span>
           <PriceChange value={market.priceChange24hPct} className="text-base" />
         </div>
+
+        {market.decimals !== null && market.quoteDecimals !== null && (
+          <div className="mt-4 flex gap-3">
+            <TradeButton
+              side="BUY"
+              variant="primary"
+              className="flex-1"
+              tokenAddress={market.tokenAddress}
+              tokenSymbol={market.symbol}
+              tokenDecimals={market.decimals}
+              quoteTokenAddress={market.quoteAddress}
+              quoteTokenSymbol={market.quoteSymbol}
+              quoteTokenDecimals={market.quoteDecimals}
+            />
+            <TradeButton
+              side="SELL"
+              variant="secondary"
+              className="flex-1"
+              tokenAddress={market.tokenAddress}
+              tokenSymbol={market.symbol}
+              tokenDecimals={market.decimals}
+              quoteTokenAddress={market.quoteAddress}
+              quoteTokenSymbol={market.quoteSymbol}
+              quoteTokenDecimals={market.quoteDecimals}
+            />
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-3 gap-3">
           <Stat

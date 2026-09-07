@@ -28,6 +28,12 @@ export function toSocialActivity(swap: ActivityRow, likes: number, likedByMe: bo
       symbol: swap.tokenMarket.token.symbol,
       name: swap.tokenMarket.token.name,
       logoUrl: swap.tokenMarket.token.logoUrl,
+      // Phase 3 — see docs/TRADING.md#quote-system. Lets an activity card's "Trade" action
+      // request a quote directly, without a second round-trip to /market for token info.
+      decimals: swap.tokenMarket.token.decimals,
+      quoteAddress: swap.tokenMarket.quoteToken.contractAddress,
+      quoteSymbol: swap.tokenMarket.quoteToken.symbol,
+      quoteDecimals: swap.tokenMarket.quoteToken.decimals,
     },
     amountUsd,
     // priceUsd is always > 0 for a stored swap (DB column is non-nullable, never zero by

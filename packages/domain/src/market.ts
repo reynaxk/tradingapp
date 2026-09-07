@@ -26,6 +26,11 @@ export const MarketSummarySchema = z.object({
   decimals: z.number().int().nullable(),
   logoUrl: z.string().nullable(),
   quoteSymbol: z.string().nullable(),
+  /** The quote token's own contract address/decimals — see docs/TRADING.md#quote-system.
+   *  Added in Phase 3 so the web client can request a trade quote without a second
+   *  round-trip; always present since every TokenMarket has a real quote token row. */
+  quoteAddress: z.string(),
+  quoteDecimals: z.number().int().nullable(),
   dex: z.string().nullable(),
   feeTier: z.number().int().nullable(),
   priceUsd: z.number().nullable(),
