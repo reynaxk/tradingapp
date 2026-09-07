@@ -302,13 +302,74 @@ used both server-side (documented for future re-validation hooks) and client-sid
 (`TradePanel`, which refuses to let a user sign a quote past its `expiresAt` — the review
 screen shows "This quote expired — refresh it" instead of a stale "Confirm & sign").
 
-**Deliberate design note on why `POST /trade/transactions` does not itself re-check
-`expiresAt`:** by the time that endpoint is called, the wallet has already signed and
-broadcast the transaction — it is irreversibly on-chain. Rejecting the *recording* of an
-already-executed trade because its quote expired wouldn't undo the trade; it would only
-make Fomo's own records dishonestly incomplete about money that already moved. Quote
-freshness is enforced where it actually matters — before the user signs, in the client and
-via the 30-second expiry itself — not as a redundant, meaningless gate after the fact.
+**`POST /trade/transactions` rejects submission against an expired quote** — see
+[Transaction submission](#transaction-submission). An earlier version of this document
+argued the opposite (that by submission time the wallet had already broadcast, so
+rejecting the recording couldn't undo anything and the check would be "meaningless"). That
+reasoning missed the actual attack it needs to defend against: a stale, expired `quoteId`
+being replayed later against a **different, unrelated transaction hash** — not the honest
+"my own broadcast raced past a 30-second timer" case. Combined with the on-chain match
+check in [Transaction integrity](#transaction-integrity), the expiry check closes off
+reusing an old quote as a container to attach a hash that was never the trade Fomo actually
+reviewed at that price. It still cannot and does not attempt to undo a transaction the
+wallet already broadcast — it only refuses to let Fomo's own records treat an expired
+quote's stale price/terms as the reviewed trade going forward.
+
+## Transaction integrity
+
+**A successful on-chain receipt is necessary but never sufficient to confirm a trade.** A
+receipt only proves *some* transaction with a given hash succeeded — it says nothing about
+*which* trade that was. Without checking further, nothing would stop a client from
+submitting any arbitrary, unrelated transaction hash it can find with a successful receipt
+(its own past transaction, someone else's, even a well-known public one) and having Fomo
+eventually mark the associated quote CONFIRMED, fabricating a trade that never actually
+happened as quoted.
+
+`transactionMatchesQuote` (`packages/domain/src/trading.ts`) is the check that closes this:
+given the transaction's real on-chain `from`/`to`/`value`/`data` (read via
+`EvmChainDataProvider#getTransactionDetails`, `packages/chain-adapters`) and the wallet
+address plus `unsignedTx` a quote actually persisted, it requires an **exact** match on all
+four:
+
+- **Sender (`from`)** — the wallet the quote was created for, and re-verified as owned by
+  the caller (see [Authorization](#authorization)) — not merely "a" successful transaction.
+- **Destination (`to`)** — the exact router/contract address the quote's `unsignedTx.to`
+  named, never a different contract.
+- **Value** — the exact native-token amount, as a `bigint`, never approximated.
+- **Calldata (`data`)** — byte-for-byte identical to `unsignedTx.data`. Since the client
+  hands this exact field to the wallet for signing (`TradePanel#handleConfirmAndSign`)
+  without ever modifying it, a real, honest submission's calldata always matches exactly;
+  anything else is either a wrong hash or a forged one.
+
+Chain correctness is implicit rather than a separate field check: `getTransactionDetails`
+reads from the one RPC configured for Fomo's single supported chain
+(see [Chain scope](#chain-scope)), so a hash that only exists on a different chain simply
+resolves to "not found" here.
+
+This check runs in two places, for two different reasons:
+
+1. **At submission** (`TransactionService#submitTransaction`) — best-effort and fail-fast.
+   If the transaction is already visible to Fomo's RPC (mined, or already propagated to
+   that node's mempool), a mismatch is rejected immediately, before a `TradeTransaction`
+   row is ever created — the fastest, clearest feedback, and the smallest possible window
+   for a bad row to exist at all. If the transaction isn't visible yet (a very recent
+   broadcast that hasn't propagated to this specific RPC), this can't be decided from here
+   — that's fine, because of (2).
+2. **Before every CONFIRMED transition** (`TransactionService#refreshStatus`, and
+   independently in `apps/workers/src/trading/sweep.ts` — see
+   [Transaction lifecycle](#transaction-lifecycle)) — authoritative and race-free. Both
+   only ever run this check once `getTransactionReceiptStatus` has already confirmed the
+   transaction is mined, at which point `getTransactionDetails` reading the same hash is
+   guaranteed to see it too — no propagation-race ambiguity is possible at this point. A
+   receipt that says "success" for a transaction that fails this match is marked **FAILED**,
+   with a clear `failureReason` — never left PENDING (which would just keep re-checking a
+   thing that will never resolve differently) and never CONFIRMED (which would be exactly
+   the fabrication this check exists to prevent).
+
+Because (2) is authoritative and runs independently of (1) on every path to CONFIRMED, a
+gap in the submission-time check (e.g. the not-yet-visible case) can never actually result
+in an unrelated transaction being confirmed — it only ever delays when the mismatch is
+caught, never whether it is.
 
 ## Transaction submission
 
@@ -321,6 +382,12 @@ is a hash to track":
 
 - Verifies the quote belongs to the caller and names the same wallet.
 - Validates `txHash` is a well-formed 32-byte hash before touching the database.
+- **Rejects an expired quote** (`quote.expiresAt <= now`) — see the note above.
+- **Re-derives wallet ownership from the database**, not from the quote's frozen snapshot —
+  a wallet unlinked, or re-verified to a different account, after the quote was created can
+  no longer be used to submit against it. See [Authorization](#authorization).
+- **Verifies the transaction matches the quote** wherever that can already be decided — see
+  [Transaction integrity](#transaction-integrity) above.
 - Is **idempotent** on both `quoteId` (`@unique`) and `(chainId, txHash)` (`@@unique`) — a
   client retry (a flaky response, a duplicated click) returns the existing row rather than
   erroring or creating a second record. The `(chainId, txHash)` race is caught via Prisma's
@@ -348,13 +415,16 @@ double-tapped button, a client's own retry logic) execute something twice:
 ## Transaction lifecycle
 
 ```text
-PENDING  →  CONFIRMED   (a real receipt with status "success")
-         →  FAILED      (a real receipt with status "reverted")
+PENDING  →  CONFIRMED   (a real receipt with status "success" AND the on-chain tx matches the quote)
+         →  FAILED      (a real receipt with status "reverted",
+                          OR a successful receipt that does NOT match the quote — see #transaction-integrity)
          →  EXPIRED      (no receipt after TRADING_DEFAULTS.pendingTransactionTimeoutMinutes, 30 min)
 ```
 
-Two independent, idempotent paths move a transaction out of `PENDING`, both calling the same
-logic (`TransactionService#refreshStatus` / the equivalent sweep in `apps/workers`):
+Two independent, idempotent paths move a transaction out of `PENDING`, both running the same
+checks (`TransactionService#refreshStatus` and the independent equivalent in
+`apps/workers/src/trading/sweep.ts` — see [Transaction integrity](#transaction-integrity)
+for why the sweep isn't a lesser-checked backdoor around the same gate):
 
 1. **On-demand**: `GET /trade/transactions/:id` refreshes a still-`PENDING` row before
    returning it, so a user actively watching a trade sees it confirm promptly.
@@ -363,12 +433,16 @@ logic (`TransactionService#refreshStatus` / the equivalent sweep in `apps/worker
    watching — a closed tab, a backgrounded submission — so `PENDING` never lingers forever
    for those. A single row's RPC failure never aborts the rest of the batch.
 
-**Never marks `CONFIRMED` because a wallet returned a hash.** The only two ways a status
-changes are a real `eth_getTransactionReceipt` call
-(`EvmChainDataProvider#getTransactionReceiptStatus`, `packages/chain-adapters`) or, for
-`EXPIRED`, giving up after the fixed timeout. `getTransactionReceiptStatus` deliberately
-conflates "not yet mined" and "an RPC hiccup" into the same `null` — never fabricating a
-status when it genuinely doesn't know one.
+**Never marks `CONFIRMED` because a wallet returned a hash, and never merely because a
+receipt says "success."** A status only ever changes in response to a real
+`eth_getTransactionReceipt` call (`EvmChainDataProvider#getTransactionReceiptStatus`,
+`packages/chain-adapters`) — conflating "not yet mined" and "an RPC hiccup" into the same
+`null` deliberately, never fabricating a status when it genuinely doesn't know one — and,
+for the specific CONFIRMED transition, a further real on-chain read
+(`getTransactionDetails`) confirming the transaction's sender/destination/value/calldata
+actually match the persisted quote. A receipt that says "success" but fails that match
+becomes FAILED, not CONFIRMED and not PENDING — see
+[Transaction integrity](#transaction-integrity).
 
 ## Trade history
 
@@ -441,9 +515,18 @@ trader-attribution heuristic, not a new kind of dishonesty.
   above; nothing here relaxes it.
 - **A client-supplied wallet address is never proof of anything** — see
   [Wallet ownership](#wallet-ownership); every private trading endpoint re-derives ownership
-  from the database, never from the request body alone.
+  from the database, never from the request body alone, and never from a quote's frozen
+  snapshot at creation time — [Transaction submission](#transaction-submission) re-checks it
+  again at submission.
 - **No client-asserted user id anywhere** — every trading/wallet endpoint scopes to
   `req.user.id` from the verified JWT, exactly like Phase 2's follow/like mutations.
+- **A successful transaction receipt is never, by itself, treated as proof of which trade
+  happened** — see [Transaction integrity](#transaction-integrity). An arbitrary or
+  unrelated transaction hash — even a real, successful one — can neither be submitted
+  against a quote it doesn't match nor ever reach CONFIRMED for one.
+- **A stale quote cannot be replayed** — [Transaction submission](#transaction-submission)
+  rejects an expired `quoteId` outright, closing off reusing an old quote as a container for
+  a later, unrelated transaction hash.
 - **All financial math is exact-integer (`bigint`)** — fee amounts, minimum-output amounts,
   and every persisted token amount are raw integer strings; nothing here converts a
   raw on-chain amount to a JS `Number` for storage or comparison (only for *display*
@@ -518,6 +601,14 @@ whatever session/wallet a browser has, which a Server Component structurally can
 - **Indexed social-activity pickup for a Fomo-executed trade is not guaranteed** — see
   [Indexer integration](#indexer-integration). Trade status itself is never affected by
   this; only whether the trade also shows up as a feed item tied to a specific tracked pool.
+- **The submission-time transaction-integrity check is best-effort, not a guarantee** — see
+  [Transaction integrity](#transaction-integrity). A transaction that hasn't yet propagated
+  to Fomo's configured RPC at the moment of submission can't be checked at that instant; it
+  is instead checked, authoritatively, the moment it's actually mined (before any CONFIRMED
+  transition). This means a mismatched hash could very briefly exist as a `PENDING` row
+  before resolving to `FAILED` — it can never reach `CONFIRMED` regardless — a deliberate
+  tradeoff of a small, bounded window of "not yet checked" over rejecting a legitimate,
+  freshly-broadcast transaction that simply hasn't propagated everywhere yet.
 - **No background job resolves a transaction stuck in an ambiguous receipt state beyond the
   documented 30-minute timeout** — after that, it's marked `EXPIRED` even if it eventually
   confirms very late on a congested network. This trades a small amount of correctness in an
