@@ -47,7 +47,10 @@ describe('Trader intelligence & discovery (e2e) — public reads', () => {
   const chainIdentifier = 'eip155:8453';
   const tokenA = { base: '0xc000000000000000000000000000000000000a01', quote: '0xc000000000000000000000000000000000000a02', pool: '0xc000000000000000000000000000000000000a03' };
   const tokenB = { base: '0xc000000000000000000000000000000000000b01', quote: '0xc000000000000000000000000000000000000b02', pool: '0xc000000000000000000000000000000000000b03' };
-  const traderAddress = '0xc00000000000000000000000000000000000dEaD';
+  // Lowercase, deliberately — Wallet.address is looked up by exact primary-key match after
+  // the API normalizes an incoming address param to lowercase (see normalizeEvmAddress in
+  // @fomo/domain); a mixed-case literal here would insert a row the endpoint could never find.
+  const traderAddress = '0xc00000000000000000000000000000000000dead';
   let marketAId: string;
   let marketBId: string;
   const swapIds: string[] = [];
