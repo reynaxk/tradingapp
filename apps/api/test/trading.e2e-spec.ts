@@ -38,6 +38,39 @@ async function fetchRealSuccessfulTxHashes(count: number): Promise<string[]> {
   return found;
 }
 
+/** Fresh Nest app instance, own DI container, own in-memory throttler storage — see the
+ *  per-`describe`-block usage below for why this matters. */
+async function buildApp(): Promise<INestApplication> {
+  const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  return createTestApp(moduleRef);
+}
+
+async function issueSession(app: INestApplication): Promise<{ token: string; userId: string }> {
+  const res = await request(app.getHttpServer()).post('/v1/identity/session');
+  expect(res.status).toBe(201);
+  return { token: res.body.token as string, userId: res.body.userId as string };
+}
+
+/** Runs the real challenge -> sign -> verify flow with a fresh, never-funded keypair, so
+ *  every trading test that needs "a session with a verified wallet" gets one without
+ *  duplicating the crypto plumbing. */
+async function linkVerifiedWallet(app: INestApplication, token: string) {
+  const account = privateKeyToAccount(generatePrivateKey());
+  const auth = { Authorization: `Bearer ${token}` };
+
+  const challenge = await request(app.getHttpServer()).post('/v1/identity/wallet/challenge').set(auth).send({ address: account.address });
+  expect(challenge.status).toBe(201);
+
+  const signature = await account.signMessage({ message: challenge.body.message });
+  const verify = await request(app.getHttpServer())
+    .post('/v1/identity/wallet/verify')
+    .set(auth)
+    .send({ nonce: challenge.body.nonce, signature });
+  expect(verify.status).toBe(200);
+
+  return { account, address: account.address.toLowerCase() };
+}
+
 /**
  * Requires a reachable Postgres (DATABASE_URL) and Redis (REDIS_URL), same as
  * market.e2e-spec.ts / social.e2e-spec.ts. CI runs this against a real Base RPC and the
@@ -46,11 +79,16 @@ async function fetchRealSuccessfulTxHashes(count: number): Promise<string[]> {
  * asserts the honest 422 failure path instead. Wallet ownership is exercised with real
  * ECDSA signatures (fresh keypairs, never funded, never reused across tests) — never
  * mocked — so this is the one place proving the actual crypto, not a stand-in for it.
- * See docs/TESTING.md.
+ *
+ * Every describe block below gets its own Nest app instance (own throttler storage) rather
+ * than sharing one for the whole file. `/identity/session` and `/identity/wallet/challenge`
+ * are both throttled to 10/60s in production, and this suite legitimately needs many
+ * distinct sessions/challenges for proper test isolation (one fresh user per test in most
+ * cases) — more than 10 across the whole file. Splitting by describe block keeps every
+ * individual app instance's usage safely under that budget without ever touching the
+ * production throttle values themselves — see docs/TESTING.md.
  */
 describe('Trading (e2e)', () => {
-  let app: INestApplication;
-
   // Distinct from market.e2e-spec.ts and social.e2e-spec.ts's fixture addresses — see the
   // comment in social.e2e-spec.ts on why that matters even with maxWorkers: 1.
   const chainIdentifier = 'eip155:8453';
@@ -62,9 +100,10 @@ describe('Trading (e2e)', () => {
   let tokenMarketId: string;
   let unrelatedTxHashes: string[];
 
+  // Seeds shared, read-only fixture data directly via Prisma — deliberately not tied to any
+  // one app instance, since every describe block below reads the same underlying database
+  // regardless of which app instance it's making requests through.
   beforeAll(async () => {
-    const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = await createTestApp(moduleRef);
     unrelatedTxHashes = await fetchRealSuccessfulTxHashes(2);
 
     const chain = await prisma.chain.upsert({
@@ -106,34 +145,7 @@ describe('Trading (e2e)', () => {
     await prisma.tradeTransaction.deleteMany({ where: { tokenMarketId } });
     await prisma.tradeQuote.deleteMany({ where: { tokenMarketId } });
     await prisma.tokenMarket.delete({ where: { id: tokenMarketId } }).catch(() => undefined);
-    await app.close();
   });
-
-  async function issueSession(): Promise<{ token: string; userId: string }> {
-    const res = await request(app.getHttpServer()).post('/v1/identity/session');
-    expect(res.status).toBe(201);
-    return { token: res.body.token as string, userId: res.body.userId as string };
-  }
-
-  /** Runs the real challenge -> sign -> verify flow with a fresh, never-funded keypair, so
-   *  every trading test that needs "a session with a verified wallet" gets one without
-   *  duplicating the crypto plumbing. */
-  async function linkVerifiedWallet(token: string) {
-    const account = privateKeyToAccount(generatePrivateKey());
-    const auth = { Authorization: `Bearer ${token}` };
-
-    const challenge = await request(app.getHttpServer()).post('/v1/identity/wallet/challenge').set(auth).send({ address: account.address });
-    expect(challenge.status).toBe(201);
-
-    const signature = await account.signMessage({ message: challenge.body.message });
-    const verify = await request(app.getHttpServer())
-      .post('/v1/identity/wallet/verify')
-      .set(auth)
-      .send({ nonce: challenge.body.nonce, signature });
-    expect(verify.status).toBe(200);
-
-    return { account, address: account.address.toLowerCase() };
-  }
 
   async function seedQuote(userId: string, walletAddress: string, overrides: Partial<Record<string, unknown>> = {}) {
     return prisma.tradeQuote.create({
@@ -160,14 +172,22 @@ describe('Trading (e2e)', () => {
   }
 
   describe('wallet ownership', () => {
+    let app: INestApplication;
+    beforeAll(async () => {
+      app = await buildApp();
+    });
+    afterAll(async () => {
+      await app.close();
+    });
+
     it('POST /v1/identity/wallet/challenge requires authentication', async () => {
       const res = await request(app.getHttpServer()).post('/v1/identity/wallet/challenge').send({ address: '0x1234567890123456789012345678901234567890' });
       expect(res.status).toBe(401);
     });
 
     it('challenge -> sign -> verify -> listed -> unlink -> gone', async () => {
-      const { token } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const auth = { Authorization: `Bearer ${token}` };
 
       const list = await request(app.getHttpServer()).get('/v1/identity/wallets').set(auth);
@@ -182,7 +202,7 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects verification signed by the wrong account', async () => {
-      const { token } = await issueSession();
+      const { token } = await issueSession(app);
       const account = privateKeyToAccount(generatePrivateKey());
       const otherAccount = privateKeyToAccount(generatePrivateKey());
       const auth = { Authorization: `Bearer ${token}` };
@@ -195,7 +215,7 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects reusing an already-consumed nonce (replay protection)', async () => {
-      const { token } = await issueSession();
+      const { token } = await issueSession(app);
       const account = privateKeyToAccount(generatePrivateKey());
       const auth = { Authorization: `Bearer ${token}` };
 
@@ -208,8 +228,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects verifying a challenge issued to a different session (no cross-user wallet linking)', async () => {
-      const sessionA = await issueSession();
-      const sessionB = await issueSession();
+      const sessionA = await issueSession(app);
+      const sessionB = await issueSession(app);
       const account = privateKeyToAccount(generatePrivateKey());
 
       const challenge = await request(app.getHttpServer())
@@ -226,12 +246,18 @@ describe('Trading (e2e)', () => {
     });
 
     // Challenge rate-limiting is covered by its own top-level describe block below, using
-    // an isolated app instance — see the comment there for why it can't share this file's
-    // `app` (it would burn through the same 10/60s budget every other test in this file
-    // relies on for its own linkVerifiedWallet() calls to keep succeeding).
+    // its own isolated app instance for the same reason every block here has one.
   });
 
   describe('GET /v1/trade/quote', () => {
+    let app: INestApplication;
+    beforeAll(async () => {
+      app = await buildApp();
+    });
+    afterAll(async () => {
+      await app.close();
+    });
+
     it('requires authentication', async () => {
       const res = await request(app.getHttpServer()).get(
         `/v1/trade/quote?side=BUY&tokenAddress=${baseAddress}&walletAddress=0x1234567890123456789012345678901234567890&amount=1`,
@@ -240,7 +266,7 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects a wallet the caller has never verified — never trusts a client-asserted address', async () => {
-      const { token } = await issueSession();
+      const { token } = await issueSession(app);
       const res = await request(app.getHttpServer())
         .get(`/v1/trade/quote?side=BUY&tokenAddress=${baseAddress}&walletAddress=0x1234567890123456789012345678901234567890&amount=1`)
         .set('Authorization', `Bearer ${token}`);
@@ -248,8 +274,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects a malformed amount before it ever reaches the router', async () => {
-      const { token } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const res = await request(app.getHttpServer())
         .get(`/v1/trade/quote?side=BUY&tokenAddress=${baseAddress}&walletAddress=${address}&amount=not-a-number`)
         .set('Authorization', `Bearer ${token}`);
@@ -257,8 +283,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects a slippageBps outside the safe bounds', async () => {
-      const { token } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const res = await request(app.getHttpServer())
         .get(`/v1/trade/quote?side=BUY&tokenAddress=${baseAddress}&walletAddress=${address}&amount=1&slippageBps=99999`)
         .set('Authorization', `Bearer ${token}`);
@@ -266,8 +292,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('404s a token address with no tracked market', async () => {
-      const { token } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const res = await request(app.getHttpServer())
         .get(`/v1/trade/quote?side=BUY&tokenAddress=${untrackedTokenAddress}&walletAddress=${address}&amount=1`)
         .set('Authorization', `Bearer ${token}`);
@@ -275,8 +301,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('returns an honest 422 rather than a fabricated quote when the aggregator has no real key to answer with', async () => {
-      const { token } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const res = await request(app.getHttpServer())
         .get(`/v1/trade/quote?side=BUY&tokenAddress=${baseAddress}&walletAddress=${address}&amount=1`)
         .set('Authorization', `Bearer ${token}`);
@@ -286,14 +312,22 @@ describe('Trading (e2e)', () => {
   });
 
   describe('POST /v1/trade/transactions', () => {
+    let app: INestApplication;
+    beforeAll(async () => {
+      app = await buildApp();
+    });
+    afterAll(async () => {
+      await app.close();
+    });
+
     it('requires authentication', async () => {
       const res = await request(app.getHttpServer()).post('/v1/trade/transactions').send({ quoteId: 'x', walletAddress: '0x1', txHash: '0x1' });
       expect(res.status).toBe(401);
     });
 
     it('rejects a malformed transaction hash', async () => {
-      const { token } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const res = await request(app.getHttpServer())
         .post('/v1/trade/transactions')
         .set('Authorization', `Bearer ${token}`)
@@ -302,11 +336,11 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects submitting a quote that belongs to another user', async () => {
-      const owner = await issueSession();
-      const { address: ownerWallet } = await linkVerifiedWallet(owner.token);
+      const owner = await issueSession(app);
+      const { address: ownerWallet } = await linkVerifiedWallet(app, owner.token);
       const quote = await seedQuote(owner.userId, ownerWallet);
 
-      const attacker = await issueSession();
+      const attacker = await issueSession(app);
       const res = await request(app.getHttpServer())
         .post('/v1/trade/transactions')
         .set('Authorization', `Bearer ${attacker.token}`)
@@ -315,8 +349,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('submits a valid, owned quote and is idempotent on a retried submission', async () => {
-      const { token, userId } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token, userId } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const quote = await seedQuote(userId, address);
       const txHash = `0x${'2'.repeat(64)}`;
       const auth = { Authorization: `Bearer ${token}` };
@@ -332,8 +366,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('GET /v1/trade/transactions/:id enforces ownership (404 for another user) and leaves a real but unconfirmed hash PENDING', async () => {
-      const { token, userId } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token, userId } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const quote = await seedQuote(userId, address);
       const txHash = `0x${'3'.repeat(64)}`;
       const auth = { Authorization: `Bearer ${token}` };
@@ -341,7 +375,7 @@ describe('Trading (e2e)', () => {
       const submitted = await request(app.getHttpServer()).post('/v1/trade/transactions').set(auth).send({ quoteId: quote.id, walletAddress: address, txHash });
       expect(submitted.status).toBe(201);
 
-      const other = await issueSession();
+      const other = await issueSession(app);
       const asOther = await request(app.getHttpServer())
         .get(`/v1/trade/transactions/${submitted.body.id}`)
         .set('Authorization', `Bearer ${other.token}`);
@@ -355,8 +389,8 @@ describe('Trading (e2e)', () => {
     }, 20_000);
 
     it('GET /v1/trade/history is scoped to the caller and ignores/rejects a client-supplied userId', async () => {
-      const a = await issueSession();
-      const { address: addressA } = await linkVerifiedWallet(a.token);
+      const a = await issueSession(app);
+      const { address: addressA } = await linkVerifiedWallet(app, a.token);
       const quoteA = await seedQuote(a.userId, addressA);
       await request(app.getHttpServer())
         .post('/v1/trade/transactions')
@@ -364,7 +398,7 @@ describe('Trading (e2e)', () => {
         .send({ quoteId: quoteA.id, walletAddress: addressA, txHash: `0x${'4'.repeat(64)}` })
         .expect(201);
 
-      const b = await issueSession();
+      const b = await issueSession(app);
       const historyB = await request(app.getHttpServer()).get('/v1/trade/history').set('Authorization', `Bearer ${b.token}`);
       expect(historyB.status).toBe(200);
       expect(historyB.body.items).toEqual([]);
@@ -389,9 +423,17 @@ describe('Trading (e2e)', () => {
    * submission rather than trusted from the quote's frozen snapshot.
    */
   describe('transaction integrity', () => {
+    let app: INestApplication;
+    beforeAll(async () => {
+      app = await buildApp();
+    });
+    afterAll(async () => {
+      await app.close();
+    });
+
     it('rejects submitting a transaction against an expired quote', async () => {
-      const { token, userId } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token, userId } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const quote = await seedQuote(userId, address, { expiresAt: new Date(Date.now() - 1000) });
 
       const res = await request(app.getHttpServer())
@@ -404,8 +446,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects submitting a transaction once the wallet has been unlinked after the quote was created', async () => {
-      const { token, userId } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token, userId } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const quote = await seedQuote(userId, address);
 
       await request(app.getHttpServer()).delete(`/v1/identity/wallets/${address}`).set('Authorization', `Bearer ${token}`).expect(200);
@@ -420,8 +462,8 @@ describe('Trading (e2e)', () => {
     });
 
     it('rejects a real, unrelated, already-successful transaction hash at submission — it is not the trade that was reviewed', async () => {
-      const { token, userId } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token, userId } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const quote = await seedQuote(userId, address);
 
       const res = await request(app.getHttpServer())
@@ -434,8 +476,8 @@ describe('Trading (e2e)', () => {
     }, 20_000);
 
     it('never marks a quote CONFIRMED merely because an unrelated transaction hash has a successful receipt', async () => {
-      const { token, userId } = await issueSession();
-      const { address } = await linkVerifiedWallet(token);
+      const { token, userId } = await issueSession(app);
+      const { address } = await linkVerifiedWallet(app, token);
       const quote = await seedQuote(userId, address);
 
       // Bypasses submitTransaction's own checks entirely (which would themselves reject
@@ -474,15 +516,11 @@ describe('Trading (e2e)', () => {
 describe('Trading (e2e) — challenge rate limiting', () => {
   let isolatedApp: INestApplication;
 
-  // A dedicated Nest app instance with its own in-memory throttler storage — see
-  // docs/TESTING.md. Reusing the main describe block's shared `app` here would burn
-  // through the same 10/60s budget every other test in this file depends on for its own
-  // linkVerifiedWallet() calls to keep succeeding, turning one rate-limit test into a
-  // cascade of unrelated failures throughout the rest of the suite. Production throttling
-  // itself is untouched — this only isolates the *test*, not the limit being tested.
+  // A dedicated Nest app instance with its own in-memory throttler storage — see the module
+  // doc comment above. Production throttling (still the real @Throttle(10/60s)) is
+  // completely untouched; only the test's blast radius is contained.
   beforeAll(async () => {
-    const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    isolatedApp = await createTestApp(moduleRef);
+    isolatedApp = await buildApp();
   });
 
   afterAll(async () => {
@@ -496,15 +534,22 @@ describe('Trading (e2e) — challenge rate limiting', () => {
 
     // The controller throttles this route to 10/60s (see identity.controller.ts) —
     // requesting one more than that in quick succession must eventually 429 rather than
-    // letting a client mint unlimited nonces for an address it doesn't own.
-    const responses = await Promise.all(
-      Array.from({ length: 12 }, (_, i) =>
-        request(isolatedApp.getHttpServer())
-          .post('/v1/identity/wallet/challenge')
-          .set(auth)
-          .send({ address: `0x${i.toString().padStart(2, '0')}23456789012345678901234567890123456789` }),
-      ),
-    );
-    expect(responses.some((res) => res.status === 429)).toBe(true);
+    // letting a client mint unlimited nonces for an address it doesn't own. Sequential,
+    // not concurrent: a counter-based rate limit doesn't need true concurrency to trigger,
+    // and firing a burst of simultaneous connections at a just-created app instance (no
+    // prior request to establish the listener) is its own source of flaky ECONNRESETs
+    // unrelated to the throttle logic being tested.
+    let sawTooManyRequests = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await request(isolatedApp.getHttpServer())
+        .post('/v1/identity/wallet/challenge')
+        .set(auth)
+        .send({ address: `0x${i.toString().padStart(2, '0')}23456789012345678901234567890123456789` });
+      if (res.status === 429) {
+        sawTooManyRequests = true;
+        break;
+      }
+    }
+    expect(sawTooManyRequests).toBe(true);
   });
 });
