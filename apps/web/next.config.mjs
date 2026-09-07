@@ -10,6 +10,11 @@ const nextConfig = {
     // them. Never constructing those connectors isn't enough to avoid this: ES module
     // imports are resolved for the whole file graph before tree-shaking removes anything.
     config.plugins.push(new webpack.IgnorePlugin({ resourceRegExp: /^@x402\// }));
+    // Same story for @metamask/sdk (pulled in by the same barrel's metaMask connector,
+    // also unused here — see lib/wagmi-config.ts): its React Native storage backend is
+    // optional and irrelevant to a web bundle, but not installing it otherwise produces a
+    // (non-fatal, but noisy) "Module not found" build warning.
+    config.plugins.push(new webpack.IgnorePlugin({ resourceRegExp: /^@react-native-async-storage\// }));
     return config;
   },
 };

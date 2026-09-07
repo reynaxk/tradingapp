@@ -84,7 +84,7 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      - name: API health e2e test (against live Postgres + Redis)
+      - name: API e2e tests (health, market, social, identity, trade — against live Postgres + Redis)
         run: pnpm --filter @fomo/api test:e2e
 
       - name: Build
