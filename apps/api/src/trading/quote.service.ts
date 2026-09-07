@@ -152,7 +152,7 @@ export class QuoteService {
   }
 
   /** Never trust a client-supplied wallet address as proof it belongs to the caller — see
-   *  docs/TRADING.md#server-authorization. */
+   *  docs/TRADING.md#authorization. */
   private async assertWalletOwnership(userId: string, walletAddress: string): Promise<void> {
     const wallet = await prisma.wallet.findUnique({ where: { address: walletAddress } });
     if (!wallet || wallet.userId !== userId || wallet.verifiedAt === null) {

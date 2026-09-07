@@ -22,8 +22,8 @@ export const TRADING_DEFAULTS = {
   /** 0.50% — see docs/TRADING.md#fees. */
   platformFeeBps: 50,
   /** No fixed-dollar minimum fee: on a small trade a flat minimum is an arbitrarily large
-   *  effective rate (see docs/TRADING.md#small-trade-fee-rule) — disabled unless a future
-   *  minimum is explicitly configured. */
+   *  effective rate (see docs/TRADING.md#fees) — disabled unless a future minimum is
+   *  explicitly configured. */
   platformFeeMinUsd: null as number | null,
   defaultSlippageBps: 50,
   minSlippageBps: 1,

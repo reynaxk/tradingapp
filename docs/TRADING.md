@@ -132,6 +132,31 @@ DELETE /identity/wallets/:address
   wallet.verifiedAt !== null`. A client-asserted `walletAddress` in a request body is never
   trusted on its own.
 
+## Financial precision
+
+Every token amount, fee, and minimum-output figure that touches persistence or comparison
+logic is an exact `bigint` over raw (pre-decimals) integer units — never a JS `Number`,
+which cannot represent an 18-decimal token amount exactly. Concretely:
+
+- **Parsing user input**: `parseUnits(amount, decimals)` (viem) turns a decimal string into
+  an exact raw integer — never `Number(amount) * 10 ** decimals`, which loses precision for
+  large or high-decimal values.
+- **Fee and slippage math**: `calculateFeeAmount`/`calculateMinOutputAmount`
+  (`packages/domain/src/trading.ts`) are pure `bigint` arithmetic
+  (`(amount * bps) / 10_000n`) — no floating-point division anywhere in the fee path.
+  `platformFeeBps` is always a parameter passed in from server config, never a hardcoded
+  literal like `0.005`.
+- **Persistence**: every raw amount column on `TradeQuote`/`TradeTransaction` is a `String`
+  (schema.prisma), not a numeric type that Prisma would round-trip through a JS `Number` —
+  see the field comments on those models.
+- **Display only**: a raw `bigint` is converted to a human string via `formatUnits` purely
+  for rendering (`*Formatted` fields on the DTOs, `QuoteSummary`/`TransactionDetail` in
+  `apps/web`) — the underlying exact value is never derived *from* that display string.
+- **The one sanctioned exception**: `estimatedPriceImpact`, a small display percentage from
+  0x (never a token amount), is parsed with `Number.parseFloat` in
+  `zero-ex-router.service.ts#parsePriceImpactBps` — explicitly justified there as outside
+  the token/fee-math rule this section describes.
+
 ## Quote system
 
 `GET /trade/quote?side=&tokenAddress=&walletAddress=&amount=&slippageBps=`
@@ -303,6 +328,23 @@ is a hash to track":
 - `status` always starts at `PENDING` from the schema default — there is no field a client
   can set to claim a different starting status.
 
+## Idempotency
+
+Nowhere in the trading or wallet-ownership flow does an HTTP retry (a flaky connection, a
+double-tapped button, a client's own retry logic) execute something twice:
+
+- **Wallet-challenge consumption** (`WalletService#verifyChallenge`) flips
+  `WalletChallenge.usedAt` via a conditional `updateMany` keyed on `usedAt: null` — a
+  concurrent second attempt sees `count === 0` and is rejected, rather than both callers
+  successfully linking the wallet.
+- **Transaction submission** (`TransactionService#submitTransaction`, above) is idempotent
+  on both `TradeQuote.id` (via `TradeTransaction.quoteId`'s `@unique`) and
+  `(chainId, txHash)` (`@@unique`) — either a repeated call with the same quote or two
+  concurrent calls racing to record the same broadcast hash converge on one row, never two.
+- **Follows/likes** (Phase 2, unchanged) already established this pattern with a `P2002`-as-
+  success handler; Phase 3's transaction path extends it to a case with *two* independent
+  uniqueness constraints instead of one, since a retry could plausibly collide on either.
+
 ## Transaction lifecycle
 
 ```text
@@ -340,6 +382,28 @@ Public blockchain activity remains publicly visible through the existing Phase 2
 system regardless; this endpoint is specifically the caller's own **private** trade record
 (fee amounts, exact input amounts, submission timestamps) layered on top of that public
 data, not a replacement for it.
+
+## Authorization
+
+Every private trading endpoint follows the same chain: **JWT → authenticated user →
+verified wallet ownership → allowed wallet for this operation.**
+
+1. `JwtAuthGuard` establishes `req.user.id` from a signature-checked, still-valid session
+   token (Phase 2 infrastructure, unchanged).
+2. The service layer re-derives wallet ownership from the database on every call
+   (`wallet.userId === req.user.id && wallet.verifiedAt !== null`) — see
+   [Wallet ownership](#wallet-ownership). A `walletAddress` in a request body is an input to
+   validate, never a claim to trust.
+3. Every mutation and read that's inherently personal (quotes, transaction submission,
+   transaction detail, trade history) scopes its query to `req.user.id` — there is no
+   endpoint in this module that accepts a `userId` from the client, and no query that joins
+   across users.
+
+This is a deliberately **stricter** posture than Phase 2's social layer, which is
+intentionally public (anyone can view any trader's activity). Trading is inherently tied to
+one person's funds and history, so nothing here is meant to be publicly browsable —
+contrast `apps/api/src/trading/trading.controller.ts`'s class-level `@UseGuards(JwtAuthGuard)`
+(everything requires a session) with `apps/api/src/social`'s per-route `OptionalAuthGuard`.
 
 ## Indexer integration
 
@@ -422,7 +486,7 @@ resolved transparently (see idempotency above). The web client
 throws — a rejected signature is shown as a plain, expected outcome, not treated as an
 application error.
 
-## UI states
+## Trading UI
 
 `TradePanel` (`apps/web/components/trading/TradePanel.tsx`) is the one shared trade flow
 every entry point opens — the token page's Buy/Sell buttons and an activity card's new

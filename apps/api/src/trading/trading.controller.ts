@@ -12,7 +12,7 @@ import { TransactionService } from './transaction.service';
 
 /**
  * Every endpoint here requires a session, and every mutation additionally verifies the
- * wallet in play belongs to that session (see docs/TRADING.md#server-authorization) —
+ * wallet in play belongs to that session (see docs/TRADING.md#authorization) —
  * unlike apps/api/src/social, nothing in trading is meant to be publicly browsable, since
  * it's all inherently tied to one person's funds and history.
  */
