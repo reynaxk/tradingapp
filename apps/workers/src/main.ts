@@ -70,6 +70,7 @@ async function main(): Promise<void> {
       env.CHAIN_RPC_URL,
       logger,
       redis,
+      env.WHALE_TRADE_USD_THRESHOLD,
     );
 
     await ingestion.seed().catch((error: Error) => {

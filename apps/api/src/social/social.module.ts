@@ -1,22 +1,27 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
+import { RealtimeModule } from '../realtime/realtime.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { ActivityService } from './services/activity.service';
 import { FollowService } from './services/follow.service';
 import { LikeService } from './services/like.service';
-import { RealtimeService } from './services/realtime.service';
 import { TraderService } from './services/trader.service';
 import { TrendingService } from './services/trending.service';
 import { SocialController } from './social.controller';
 
 /**
- * Owns follows, activity feeds, likes, trending, and the realtime activity stream — see
- * docs/SOCIAL.md. Reads directly from `swaps`/`token_markets` (never a separate copy — see
- * the Swap model comment in schema.prisma). `IdentityModule` is imported for its guards
- * and `IdentityService`, which they depend on to resolve the calling session.
+ * Owns follows, activity feeds, likes, and trending — see docs/SOCIAL.md. Reads directly
+ * from `swaps`/`token_markets` (never a separate copy — see the Swap model comment in
+ * schema.prisma). `IdentityModule` is imported for its guards and `IdentityService`, which
+ * they depend on to resolve the calling session. `NotificationsModule` so
+ * FollowService/LikeService can create FOLLOW/LIKE notifications on genuine creation (see
+ * docs/NOTIFICATIONS.md) — a one-way dependency: NotificationsModule has no need to import
+ * SocialModule back, so no circularity here (see RealtimeModule for the piece that would
+ * have been circular). `RealtimeModule` backs this module's own SSE activity stream.
  */
 @Module({
-  imports: [IdentityModule],
+  imports: [IdentityModule, RealtimeModule, NotificationsModule],
   controllers: [SocialController],
-  providers: [ActivityService, FollowService, LikeService, TraderService, TrendingService, RealtimeService],
+  providers: [ActivityService, FollowService, LikeService, TraderService, TrendingService],
 })
 export class SocialModule {}

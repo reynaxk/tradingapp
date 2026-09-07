@@ -51,7 +51,7 @@ UI
 A trade's outcome is only ever true once the indexer has observed it on-chain. The API
 never marks a trade "complete" from the client's optimistic submission alone.
 
-## Owners, as of Phase 2
+## Owners, as of Phase 4
 
 | Fact | Owner | Notes |
 | --- | --- | --- |
@@ -69,6 +69,9 @@ never marks a trade "complete" from the client's optimistic submission alone.
 | Wallet ownership challenges | `wallet_challenges` table | Single-use, expiring nonces — never a source of truth once consumed. See `docs/TRADING.md#wallet-ownership`. |
 | Trade quotes | `trade_quotes` table | A priced, time-boxed offer from the real aggregator — never invented, never mutated after creation. See `docs/TRADING.md#quote-system`. |
 | Trade transactions | `trade_transactions` table | Created only once a real broadcast tx hash exists; `status` moves only from a real on-chain receipt (or, for `EXPIRED`, a bounded timeout) — never a client's say-so. See `docs/TRADING.md#transaction-lifecycle`. |
+| Notifications | `notifications` table | References only (actor/swap/token ids) — title/body/deep-link are a read-time projection, never stored. Idempotency key `(userId, type, dedupeKey)`. See `docs/NOTIFICATIONS.md`. |
+| Notification preferences | `notification_preferences` table | Per-user opt-out toggles; no row means every default applies. See `docs/NOTIFICATIONS.md#preferences`. |
+| Trending state | `token_trending_state` table | **Rebuildable** cache of one boolean (`computeTrendingScore(...) !== null`) per token market, used only to detect a false→true transition. See `docs/NOTIFICATIONS.md#trending-tokens`. |
 
 Phase 3's `trade_transactions` is a deliberate **exception** to "rebuildable from raw
 history, never written directly": a trade transaction's `status` cannot be derived from

@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, prisma } from '@fomo/db';
 import { normalizeEvmAddress } from '@fomo/domain';
+import { PinoLogger } from 'nestjs-pino';
+import { NotificationService } from '../../notifications/notification.service';
 
 /**
  * Owns the follow relationship (User -> Wallet). Uniqueness is enforced at the database
@@ -10,6 +12,13 @@ import { normalizeEvmAddress } from '@fomo/domain';
  */
 @Injectable()
 export class FollowService {
+  constructor(
+    private readonly notifications: NotificationService,
+    private readonly logger: PinoLogger,
+  ) {
+    this.logger.setContext('FollowService');
+  }
+
   async follow(userId: string, address: string): Promise<void> {
     const walletAddress = normalizeEvmAddress(address);
     const wallet = await prisma.wallet.findUnique({ where: { address: walletAddress } });
@@ -24,6 +33,16 @@ export class FollowService {
         return; // already following — idempotent success, not an error
       }
       throw error;
+    }
+
+    // Only on a genuine new follow (not the P2002 idempotent-success branch above) — see
+    // followDedupeKey in @fomo/domain for why a repeated unfollow/refollow still wouldn't
+    // renotify even if this were reached again. A notification failure must never surface
+    // as a failed follow — the follow itself already succeeded above.
+    try {
+      await this.notifications.notifyFollow(userId, walletAddress);
+    } catch (error) {
+      this.logger.error({ err: error, userId, walletAddress }, 'Failed to create FOLLOW notification');
     }
   }
 

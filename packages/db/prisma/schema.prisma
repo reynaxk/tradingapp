@@ -75,30 +75,30 @@ model Token {
 /// history at any time; nothing should ever write to them by any other path. See
 /// /docs/SOURCE_OF_TRUTH.md and /docs/MARKET_DATA.md.
 model TokenMarket {
-  id           String   @id @default(uuid())
-  chainId      Int      @map("chain_id")
-  tokenId      String   @map("token_id")
-  quoteTokenId String   @map("quote_token_id")
+  id           String  @id @default(uuid())
+  chainId      Int     @map("chain_id")
+  tokenId      String  @map("token_id")
+  quoteTokenId String  @map("quote_token_id")
   dex          String?
-  pairAddress  String   @map("pair_address")
+  pairAddress  String  @map("pair_address")
   /// Uniswap-V3-style fee tier in hundredths of a bip (500 = 0.05%, 3000 = 0.3%, ...).
   /// Read from the pool contract, not chosen by us.
-  feeTier      Int?     @map("fee_tier")
+  feeTier      Int?    @map("fee_tier")
 
   /// Nullable: unknown until the indexer observes this pool's reserves. Never a guess.
-  liquidityUsd Decimal? @map("liquidity_usd") @db.Decimal(38, 18)
+  liquidityUsd      Decimal?  @map("liquidity_usd") @db.Decimal(38, 18)
   /// Current price of `token` in USD, derived from the pool's own state. Null, never
   /// invented, when it can't be honestly computed (e.g. quote-token price unresolved).
-  priceUsd         Decimal? @map("price_usd") @db.Decimal(38, 18)
+  priceUsd          Decimal?  @map("price_usd") @db.Decimal(38, 18)
   /// Rolling 24h volume, summed from indexed `Swap` rows — not borrowed from a
   /// third party. Null (not zero) until at least one swap has been indexed.
-  volume24hUsd     Decimal? @map("volume_24h_usd") @db.Decimal(38, 18)
+  volume24hUsd      Decimal?  @map("volume_24h_usd") @db.Decimal(38, 18)
   /// Percent change vs. the earliest indexed price at least 24h old. Null — not 0% —
   /// when fewer than 24h of indexed history exist yet; see docs/MARKET_DATA.md.
-  priceChange24hPct Decimal? @map("price_change_24h_pct") @db.Decimal(12, 4)
+  priceChange24hPct Decimal?  @map("price_change_24h_pct") @db.Decimal(12, 4)
   /// price * on-chain total supply (FDV-style). Null when total supply can't be read.
   /// Documented caveat: this is fully-diluted, not "circulating" — see docs/MARKET_DATA.md.
-  marketCapUsd     Decimal? @map("market_cap_usd") @db.Decimal(38, 2)
+  marketCapUsd      Decimal?  @map("market_cap_usd") @db.Decimal(38, 2)
   /// When the price/liquidity snapshot above was last refreshed — the basis for the
   /// "stale" UI state; never inferred from `updatedAt` alone.
   lastPriceUpdateAt DateTime? @map("last_price_update_at")
@@ -110,17 +110,19 @@ model TokenMarket {
   tradeCount24h    Int? @map("trade_count_24h")
   uniqueTraders24h Int? @map("unique_traders_24h")
 
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  chain      Chain @relation(fields: [chainId], references: [id], onDelete: Restrict)
-  token      Token @relation("TokenMarketBaseToken", fields: [tokenId], references: [id], onDelete: Restrict)
-  quoteToken Token @relation("TokenMarketQuoteToken", fields: [quoteTokenId], references: [id], onDelete: Restrict)
-  swaps      Swap[]
-  candles    Candle[]
-  cursor     IngestionCursor?
+  chain             Chain               @relation(fields: [chainId], references: [id], onDelete: Restrict)
+  token             Token               @relation("TokenMarketBaseToken", fields: [tokenId], references: [id], onDelete: Restrict)
+  quoteToken        Token               @relation("TokenMarketQuoteToken", fields: [quoteTokenId], references: [id], onDelete: Restrict)
+  swaps             Swap[]
+  candles           Candle[]
+  cursor            IngestionCursor?
   tradeQuotes       TradeQuote[]
   tradeTransactions TradeTransaction[]
+  notifications     Notification[]
+  trendingState     TokenTrendingState?
 
   @@unique([chainId, pairAddress])
   @@index([tokenId])
@@ -138,12 +140,12 @@ model TokenMarket {
 /// A "social activity" item is a read-time projection of a Swap row, never a separate
 /// stored copy (`Swap.id` doubles as the activity's stable id).
 model Swap {
-  id            String   @id @default(uuid())
-  chainId       Int      @map("chain_id")
-  tokenMarketId String   @map("token_market_id")
-  txHash        String   @map("tx_hash")
-  logIndex      Int      @map("log_index")
-  blockNumber   BigInt   @map("block_number")
+  id             String   @id @default(uuid())
+  chainId        Int      @map("chain_id")
+  tokenMarketId  String   @map("token_market_id")
+  txHash         String   @map("tx_hash")
+  logIndex       Int      @map("log_index")
+  blockNumber    BigInt   @map("block_number")
   /// The block's own timestamp, not the time we happened to index it.
   blockTimestamp DateTime @map("block_timestamp")
 
@@ -175,9 +177,10 @@ model Swap {
 
   createdAt DateTime @default(now()) @map("created_at")
 
-  tokenMarket TokenMarket   @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
-  trader      Wallet?       @relation(fields: [traderAddress], references: [address], onDelete: SetNull)
-  likes       ActivityLike[]
+  tokenMarket   TokenMarket    @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+  trader        Wallet?        @relation(fields: [traderAddress], references: [address], onDelete: SetNull)
+  likes         ActivityLike[]
+  notifications Notification[]
 
   @@unique([chainId, txHash, logIndex])
   @@index([tokenMarketId, blockTimestamp])
@@ -215,9 +218,9 @@ model Candle {
 /// it resumes from here, and a crash mid-chunk just means the same range gets fetched
 /// again next run (idempotent, thanks to `Swap`'s unique constraint above).
 model IngestionCursor {
-  tokenMarketId     String   @id @map("token_market_id")
-  lastProcessedBlock BigInt  @map("last_processed_block")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  tokenMarketId      String   @id @map("token_market_id")
+  lastProcessedBlock BigInt   @map("last_processed_block")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Cascade)
 
@@ -246,15 +249,15 @@ model IngestionCursor {
 /// claim that a wallet belongs to the caller — only this column, set exclusively by
 /// `WalletService#verifyChallenge`, is authoritative.
 model Wallet {
-  address     String   @id
-  userId      String?  @map("user_id")
+  address     String    @id
+  userId      String?   @map("user_id")
   /// Set only once a linked User chooses a display identity — never inferred or guessed.
-  displayName String?  @map("display_name")
-  avatarUrl   String?  @map("avatar_url")
+  displayName String?   @map("display_name")
+  avatarUrl   String?   @map("avatar_url")
   /// The first time Fomo became aware of this wallet in *any* capacity — its first indexed
   /// trade, or the moment a user verified ownership of it, whichever happened first. Never
   /// backdated, never a guess.
-  firstSeenAt DateTime @map("first_seen_at")
+  firstSeenAt DateTime  @map("first_seen_at")
   /// Non-null only after a signature has proven this address's owner controls it — see
   /// docs/TRADING.md#wallet-ownership. Null forever for a wallet Fomo has only observed
   /// trading and no one has claimed.
@@ -263,14 +266,15 @@ model Wallet {
   /// submitted trade) — distinct from `updatedAt`, which also ticks on unrelated field
   /// changes like `displayName`.
   lastUsedAt  DateTime? @map("last_used_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  user              User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
-  trades            Swap[]
-  follows           Follow[]
-  tradeQuotes       TradeQuote[]
-  tradeTransactions TradeTransaction[]
+  user                 User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  trades               Swap[]
+  follows              Follow[]
+  tradeQuotes          TradeQuote[]
+  tradeTransactions    TradeTransaction[]
+  notificationActorFor Notification[]
 
   @@index([userId])
   @@map("wallets")
@@ -285,12 +289,15 @@ model User {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now()) @map("created_at")
 
-  wallets           Wallet[]
-  follows           Follow[]
-  likes             ActivityLike[]
-  walletChallenges  WalletChallenge[]
-  tradeQuotes       TradeQuote[]
-  tradeTransactions TradeTransaction[]
+  wallets                Wallet[]
+  follows                Follow[]
+  likes                  ActivityLike[]
+  walletChallenges       WalletChallenge[]
+  tradeQuotes            TradeQuote[]
+  tradeTransactions      TradeTransaction[]
+  notifications          Notification[]          @relation("NotificationRecipient")
+  notificationActorFor   Notification[]          @relation("NotificationActorUser")
+  notificationPreference NotificationPreference?
 
   @@map("users")
 }
@@ -405,9 +412,9 @@ model TradeQuote {
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
 
-  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  wallet      Wallet           @relation(fields: [walletAddress], references: [address], onDelete: Cascade)
-  tokenMarket TokenMarket      @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet      Wallet            @relation(fields: [walletAddress], references: [address], onDelete: Cascade)
+  tokenMarket TokenMarket       @relation(fields: [tokenMarketId], references: [id], onDelete: Restrict)
   transaction TradeTransaction?
 
   @@index([userId, createdAt])
@@ -463,4 +470,111 @@ enum TradeStatus {
   CONFIRMED
   FAILED
   EXPIRED
+}
+
+// ---------------------------------------------------------------------------------------
+// Phase 4: notifications. See docs/NOTIFICATIONS.md. Postgres is the sole source of truth
+// for every notification — Redis/SSE (below) is realtime *delivery* only, never storage;
+// a notification is always persisted before it is ever published, so a Redis or SSE outage
+// can degrade how fast a user finds out, never whether the notification exists at all.
+// ---------------------------------------------------------------------------------------
+
+enum NotificationType {
+  FOLLOW
+  LIKE
+  FOLLOWED_TRADER_TRADE
+  WHALE_TRADE
+  TRENDING_TOKEN
+}
+
+/// One notification for `user` (the recipient — always resolved from the authenticated
+/// session server-side, never a client-supplied id; see docs/NOTIFICATIONS.md#security).
+/// Deliberately stores only references, never a precomputed title/body/deep-link string —
+/// those are derived at read time from the referenced rows (see
+/// docs/SOURCE_OF_TRUTH.md and the NotificationDto comment in @fomo/domain), the same
+/// "read-time projection" pattern `Swap` → social-activity already uses.
+///
+/// `actorUserId`/`actorWalletAddress` are two different flavors of "who caused this,"
+/// populated depending on `type` (see NOTIFICATION_PREFERENCE_FIELD in @fomo/domain):
+/// FOLLOW/LIKE reference the acting *User* (a follow/like is a session action, and the
+/// actor may not even have a wallet yet); FOLLOWED_TRADER_TRADE/WHALE_TRADE reference the
+/// acting *Wallet* (the trader who made the swap, which is a wallet-level fact). Both are
+/// nullable and never both populated for the same row. TRENDING_TOKEN has no actor at all.
+///
+/// `dedupeKey` + the unique constraint below is the idempotency guarantee required by
+/// docs/NOTIFICATIONS.md#idempotency — every creation path (API for follow/like, worker
+/// for trade/whale/trending) must build its key with the matching helper in
+/// @fomo/domain/notifications so retries, indexer re-runs, and concurrent workers can never
+/// create a duplicate, without relying on any in-memory dedup.
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  dedupeKey String           @map("dedupe_key")
+
+  actorUserId        String? @map("actor_user_id")
+  actorWalletAddress String? @map("actor_wallet_address")
+  swapId             String? @map("swap_id")
+  tokenMarketId      String? @map("token_market_id")
+
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user        User         @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actorUser   User?        @relation("NotificationActorUser", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorWallet Wallet?      @relation(fields: [actorWalletAddress], references: [address], onDelete: SetNull)
+  swap        Swap?        @relation(fields: [swapId], references: [id], onDelete: SetNull)
+  tokenMarket TokenMarket? @relation(fields: [tokenMarketId], references: [id], onDelete: SetNull)
+
+  /// The idempotency guarantee itself — see the model comment above.
+  @@unique([userId, type, dedupeKey])
+  /// The notification list, newest first (`WHERE user_id = ? ORDER BY created_at DESC`).
+  @@index([userId, createdAt])
+  /// Unread count and unread list (`WHERE user_id = ? AND read_at IS NULL`).
+  @@index([userId, readAt])
+  /// Related-entity lookups (e.g. "did this swap/token already notify anyone").
+  @@index([swapId])
+  @@index([tokenMarketId])
+  @@map("notifications")
+}
+
+/// Per-user opt-out toggles — see docs/NOTIFICATIONS.md#preferences. No row means "every
+/// default applies" (see NOTIFICATION_DEFAULTS.preferenceDefaults in @fomo/domain); a row
+/// is created lazily on first write, not eagerly for every signup, matching this schema's
+/// "don't duplicate data unnecessarily" convention elsewhere. Read and written only via the
+/// authenticated session's own `userId` — never a client-supplied id, and never trusted for
+/// authorization (a disabled preference stops *creation* of a new notification of that
+/// type; it is not a security boundary and grants no access to anything).
+model NotificationPreference {
+  userId               String   @id @map("user_id")
+  follows              Boolean  @default(true)
+  likes                Boolean  @default(true)
+  followedTraderTrades Boolean  @default(true) @map("followed_trader_trades")
+  whaleTrades          Boolean  @default(true) @map("whale_trades")
+  trendingTokens       Boolean  @default(true) @map("trending_tokens")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+/// Whether each token market is *currently* trending per `computeTrendingScore` (see
+/// @fomo/domain/social) — tracked purely so the worker can detect a false→true transition
+/// and notify only on genuine entry into trending, never on every tick's score fluctuation
+/// (docs/NOTIFICATIONS.md#trending-tokens). Never a second trending algorithm or a stored
+/// score: this table is a rebuildable cache of one boolean, derived the same way
+/// `TokenMarket`'s own cached fields are — recomputable from current data at any time.
+model TokenTrendingState {
+  tokenMarketId    String    @id @map("token_market_id")
+  isTrending       Boolean   @default(false) @map("is_trending")
+  /// Set when `isTrending` last flipped false→true; this is what makes the dedupe key for
+  /// the resulting notification (see trendingTokenDedupeKey in @fomo/domain) unique to that
+  /// specific entry into trending, so a later re-entry can notify again.
+  becameTrendingAt DateTime? @map("became_trending_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Cascade)
+
+  @@map("token_trending_state")
 }

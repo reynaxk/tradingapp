@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { NOTIFICATION_DEFAULTS } from '@fomo/domain';
 
 /**
  * V1 runs on exactly one chain (see /docs/CHAIN_ADAPTERS.md) — these four CHAIN_* variables
@@ -25,6 +26,12 @@ export const EnvSchema = z.object({
    *  on-chain receipt — see docs/TRADING.md#transaction-lifecycle. Independent of
    *  apps/api's on-demand refresh; this is the backstop for trades nobody is watching. */
   TRADE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
+
+  /** The one configurable knob behind "whale trade" alerts (see
+   *  docs/NOTIFICATIONS.md#whale-trades) — centralized here rather than hardcoded at each
+   *  call site, and defaulted from the same @fomo/domain constant apps/api would use if it
+   *  ever needed to display this threshold, so the two processes can never disagree. */
+  WHALE_TRADE_USD_THRESHOLD: z.coerce.number().positive().default(NOTIFICATION_DEFAULTS.whaleTradeUsdThreshold),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

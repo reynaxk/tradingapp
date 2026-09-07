@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { ConnectWalletButton } from '@/components/wallet/ConnectWalletButton';
 import { SearchBar } from './SearchBar';
 
@@ -26,6 +27,7 @@ export function MarketHeader({ searchValue }: { searchValue?: string }) {
         </Link>
         <div className="ml-auto flex items-center gap-3">
           <SearchBar defaultValue={searchValue} />
+          <NotificationBell />
           <ConnectWalletButton />
         </div>
       </div>
