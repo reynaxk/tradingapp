@@ -199,7 +199,7 @@ token both objectively active and followed-trader-relevant` in
 watching this token" reason whenever the signal fires, alongside every other fired reason —
 never replacing them.
 
-## Return loop / "what you missed"
+## Return loop ("what you missed")
 
 Thin read over the _existing_ `Notification` table — no new event-sourcing model, no
 duplicated feed. Two new fields on `User`:

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
@@ -25,9 +26,14 @@ async function issueSession(app: INestApplication): Promise<{ token: string; use
  * address-length and mixed-case bugs in earlier phases (see docs/TESTING.md), so every
  * address in this file is generated this way instead of typed out. Always lowercase, which
  * matters for Wallet rows (looked up by exact primary-key match, never case-insensitive).
+ *
+ * Hashed, not just hex-encoded: a plain `Buffer.from(seed).toString('hex')` truncated to 40
+ * chars only reflects the seed's first 20 characters, so two seeds sharing a >20-char common
+ * prefix (e.g. "watchlist-personalization-watched" vs "...-plain") would silently collide
+ * into the *same* address. SHA-256 makes the entire seed affect every output byte.
  */
 function testAddress(seed: string): string {
-  const hex = Buffer.from(seed, 'utf8').toString('hex').padEnd(40, '0').slice(0, 40);
+  const hex = createHash('sha256').update(seed).digest('hex').slice(0, 40);
   return `0x${hex}`;
 }
 
