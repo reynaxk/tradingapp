@@ -11,9 +11,11 @@ import { TimeframeTabs } from '@/components/market/TimeframeTabs';
 import { TokenIdentity } from '@/components/market/TokenIdentity';
 import { ActivityFeed } from '@/components/social/ActivityFeed';
 import { TradeButton } from '@/components/trading/TradeButton';
+import { TokenTradersPanel } from '@/components/discovery/TokenTradersPanel';
 import { formatCompactUsd, formatDateTime, formatPrice, truncateAddress } from '@/lib/format';
 import { fetchToken, fetchTokenHistory } from '@/lib/market-api';
 import { fetchGlobalActivity } from '@/lib/social-api';
+import { fetchTokenTraders } from '@/lib/discovery-api';
 
 export const revalidate = 15;
 
@@ -35,6 +37,7 @@ export default async function TokenDetailPage({
 
   const candles = await fetchTokenHistory(params.address, timeframe);
   const activity = await fetchGlobalActivity({ tokenAddress: params.address, limit: 10 });
+  const traders = await fetchTokenTraders(params.address, 8);
 
   return (
     <>
@@ -118,6 +121,11 @@ export default async function TokenDetailPage({
             emptyTitle="No activity indexed yet."
             emptyDetail="Real trades on this market will show up here as they're indexed."
           />
+        </Surface>
+
+        <Surface className="mt-6 p-5">
+          <h2 className="mb-4 font-display text-sm font-semibold text-ink-900">Traders</h2>
+          <TokenTradersPanel connection={traders} />
         </Surface>
 
         <Surface className="mt-6 p-5">

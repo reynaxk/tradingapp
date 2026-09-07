@@ -65,6 +65,26 @@ export class ActivityService {
     return this.fetchPage({ traderAddress: normalized }, params.cursor, params.limit, params.viewerUserId);
   }
 
+  /**
+   * Phase 5 — see docs/TRADER_INTELLIGENCE.md#personalized-feed. Followed-trader activity
+   * unioned with the same quality-gated general feed getGlobalFeed uses — a single ORDER BY
+   * over one WHERE clause, so cursor pagination works exactly like every other feed here.
+   * Never a hard filter to only-followed (that's getFollowingFeed above) and never
+   * unbounded — this deliberately keeps a portion of general market discovery present so a
+   * personalized feed can't collapse into a filter bubble. Returns the plain ActivityPage;
+   * DiscoveryService adds the "why this is here" reason on top (see the reasonCode
+   * comment in packages/domain/src/trader-intelligence.ts) — that's a Phase 5 concept this
+   * Phase 2 service intentionally has no knowledge of.
+   */
+  async getPersonalizedFeedCandidates(params: { userId: string; cursor?: string; limit: number }): Promise<ActivityPage> {
+    const follows = await prisma.follow.findMany({ where: { userId: params.userId }, select: { walletAddress: true } });
+    const generalWhere: Prisma.SwapWhereInput = { tokenMarket: { liquidityUsd: { gte: DISCOVERY_RANKING.minLiquidityUsd } } };
+    const where: Prisma.SwapWhereInput =
+      follows.length > 0 ? { OR: [{ traderAddress: { in: follows.map((f) => f.walletAddress) } }, generalWhere] } : generalWhere;
+
+    return this.fetchPage(where, params.cursor, params.limit, params.userId);
+  }
+
   private async fetchPage(
     where: Prisma.SwapWhereInput,
     rawCursor: string | undefined,

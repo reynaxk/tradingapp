@@ -13,6 +13,7 @@ import { SocialModule } from './social/social.module';
 import { MarketModule } from './market/market.module';
 import { TradingModule } from './trading/trading.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { DiscoveryModule } from './discovery/discovery.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     MarketModule,
     TradingModule,
     NotificationsModule,
+    DiscoveryModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

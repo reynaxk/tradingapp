@@ -35,4 +35,12 @@ export class MarketController {
   getHistory(@Param('address') address: string, @Query() query: HistoryQueryDto) {
     return this.marketService.getHistory(address, query.timeframe);
   }
+
+  /** Phase 5 — see docs/TRADER_INTELLIGENCE.md#token-to-trader. */
+  @Get('tokens/:address/traders')
+  getTokenTraders(@Param('address') address: string, @Query('limit') limit?: string) {
+    const parsed = limit ? Number.parseInt(limit, 10) : 10;
+    const bounded = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 25) : 10;
+    return this.marketService.getTokenTraders(address, bounded);
+  }
 }
