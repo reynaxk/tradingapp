@@ -14,26 +14,39 @@ vi.mock('@fomo/db', () => ({ prisma: mockPrisma }));
 
 const fakeLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger;
 const CHAIN_ID = 8453;
+const WALLET = '0x1234567890123456789012345678901234567890';
+const UNSIGNED_TX = { to: '0xdead000000000000000000000000000000dead', data: '0xbeef', value: '1000', gas: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
 
+/** Matches WALLET/UNSIGNED_TX by default, so tests that don't care about the on-chain
+ *  match check don't have to think about it — override `onChainDetails` to test mismatch. */
 function fakeRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'tx-1',
     txHash: `0x${'a'.repeat(64)}`,
     submittedAt: new Date(),
+    walletAddress: WALLET,
+    quote: { unsignedTx: UNSIGNED_TX },
     ...overrides,
   };
 }
 
+const MATCHING_ON_CHAIN = { from: WALLET, to: UNSIGNED_TX.to, value: 1000n, data: UNSIGNED_TX.data };
+
 describe('TradeSweepService', () => {
   let getTransactionReceiptStatus: ReturnType<typeof vi.fn>;
+  let getTransactionDetails: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     getTransactionReceiptStatus = vi.fn();
+    getTransactionDetails = vi.fn().mockResolvedValue(MATCHING_ON_CHAIN);
   });
 
   function buildService() {
-    const chainReader = { getTransactionReceiptStatus } as unknown as ConstructorParameters<typeof TradeSweepService>[1];
+    const chainReader = {
+      getTransactionReceiptStatus,
+      getTransactionDetails,
+    } as unknown as ConstructorParameters<typeof TradeSweepService>[1];
     return new TradeSweepService(CHAIN_ID, chainReader, fakeLogger);
   }
 
@@ -48,7 +61,7 @@ describe('TradeSweepService', () => {
     );
   });
 
-  it('marks a transaction CONFIRMED from a real success receipt', async () => {
+  it('marks a transaction CONFIRMED from a real success receipt whose on-chain details match the quote', async () => {
     mockPrisma.tradeTransaction.findMany.mockResolvedValue([fakeRow()]);
     getTransactionReceiptStatus.mockResolvedValue('success');
 
@@ -58,6 +71,32 @@ describe('TradeSweepService', () => {
       expect.objectContaining({ where: { id: 'tx-1' }, data: expect.objectContaining({ status: 'CONFIRMED' }) }),
     );
     expect(result).toEqual({ checked: 1, confirmed: 1, failed: 0, expired: 0 });
+  });
+
+  it('never confirms a successful receipt whose on-chain sender/destination/value/calldata do not match the persisted quote — marks it FAILED instead', async () => {
+    mockPrisma.tradeTransaction.findMany.mockResolvedValue([fakeRow()]);
+    getTransactionReceiptStatus.mockResolvedValue('success');
+    getTransactionDetails.mockResolvedValue({ from: '0x9999999999999999999999999999999999999a', to: UNSIGNED_TX.to, value: 1000n, data: UNSIGNED_TX.data });
+
+    const result = await buildService().sweepPendingTransactions();
+
+    expect(mockPrisma.tradeTransaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'FAILED', failureReason: expect.stringContaining('does not match') }),
+      }),
+    );
+    expect(result).toEqual({ checked: 1, confirmed: 0, failed: 1, expired: 0 });
+  });
+
+  it('never confirms when the on-chain transaction cannot be read at all, even with a successful receipt', async () => {
+    mockPrisma.tradeTransaction.findMany.mockResolvedValue([fakeRow()]);
+    getTransactionReceiptStatus.mockResolvedValue('success');
+    getTransactionDetails.mockResolvedValue(null);
+
+    const result = await buildService().sweepPendingTransactions();
+
+    expect(mockPrisma.tradeTransaction.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }));
+    expect(result.confirmed).toBe(0);
   });
 
   it('marks a transaction FAILED from a real reverted receipt, never a silent success', async () => {

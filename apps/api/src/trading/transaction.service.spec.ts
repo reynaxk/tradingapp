@@ -7,10 +7,12 @@ import type { Env } from '../config/env';
 import { TransactionService } from './transaction.service';
 
 const mockGetReceiptStatus = jest.fn();
+const mockGetTransactionDetails = jest.fn();
 
 jest.mock('@fomo/chain-adapters', () => ({
   EvmChainDataProvider: jest.fn().mockImplementation(() => ({
     getTransactionReceiptStatus: mockGetReceiptStatus,
+    getTransactionDetails: mockGetTransactionDetails,
   })),
 }));
 
@@ -21,6 +23,7 @@ jest.mock('@fomo/db', () => {
     prisma: {
       tradeTransaction: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), findMany: jest.fn() },
       tradeQuote: { findUnique: jest.fn() },
+      wallet: { findUnique: jest.fn() },
     },
   };
 });
@@ -31,6 +34,9 @@ const USER_ID = 'user-1';
 const WALLET = '0x1234567890123456789012345678901234567890';
 const CHAIN_ID = 8453;
 const TX_HASH = `0x${'a'.repeat(64)}`;
+const UNSIGNED_TX = { to: '0xcccccccccccccccccccccccccccccccccccccccc', data: '0xdeadbeef', value: '0', gas: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
+/** Exactly matches WALLET/UNSIGNED_TX above — the "everything lines up" on-chain reading. */
+const MATCHING_ON_CHAIN = { from: WALLET, to: UNSIGNED_TX.to, value: 0n, data: UNSIGNED_TX.data };
 
 function fakeLogger(): PinoLogger {
   return { setContext: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() } as unknown as PinoLogger;
@@ -54,8 +60,14 @@ function fakeQuote(overrides: Partial<Record<string, unknown>> = {}) {
     inputAmount: '1000000000000000000',
     expectedOutputAmount: '100000000000000000000',
     platformFeeAmount: '500000000000000000',
+    unsignedTx: UNSIGNED_TX,
+    expiresAt: new Date(Date.now() + 60_000),
     ...overrides,
   };
+}
+
+function fakeVerifiedWallet(overrides: Partial<Record<string, unknown>> = {}) {
+  return { address: WALLET, userId: USER_ID, verifiedAt: new Date(), ...overrides };
 }
 
 function fakeTransactionRow(overrides: Partial<Record<string, unknown>> = {}) {
@@ -78,6 +90,7 @@ function fakeTransactionRow(overrides: Partial<Record<string, unknown>> = {}) {
       token: { contractAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', symbol: 'FOO', decimals: 18 },
       quoteToken: { contractAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', symbol: 'WETH', decimals: 18 },
     },
+    quote: { unsignedTx: UNSIGNED_TX },
     ...overrides,
   };
 }
@@ -88,6 +101,10 @@ describe('TransactionService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     service = new TransactionService(fakeConfig(), fakeLogger());
+    // Sensible "everything checks out" defaults — tests targeting a specific rejection
+    // override just the one mock that needs to fail.
+    (mockedPrisma.wallet.findUnique as jest.Mock).mockResolvedValue(fakeVerifiedWallet());
+    mockGetTransactionDetails.mockResolvedValue(MATCHING_ON_CHAIN);
   });
 
   describe('submitTransaction', () => {
@@ -125,7 +142,102 @@ describe('TransactionService', () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it('creates a PENDING transaction row from a valid, owned quote', async () => {
+    it('rejects submission against an expired quote — a stale quoteId can never be replayed', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote({ expiresAt: new Date(Date.now() - 1000) }));
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(UnprocessableEntityException);
+      expect(mockedPrisma.tradeTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('treats the exact expiry instant as expired, not a boundary grace period', async () => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote({ expiresAt: new Date(now) }));
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(UnprocessableEntityException);
+      jest.restoreAllMocks();
+    });
+
+    it('rejects submission when the wallet is no longer linked to any account (e.g. unlinked after the quote was created)', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      (mockedPrisma.wallet.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockedPrisma.tradeTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects submission when the wallet has since been re-verified to a different account', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      (mockedPrisma.wallet.findUnique as jest.Mock).mockResolvedValue(fakeVerifiedWallet({ userId: 'someone-else' }));
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects submission when the wallet is linked but its verification was cleared', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      (mockedPrisma.wallet.findUnique as jest.Mock).mockResolvedValue(fakeVerifiedWallet({ verifiedAt: null }));
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects an already-visible transaction whose sender does not match the quoted wallet — an unrelated hash, even a real one', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      mockGetTransactionDetails.mockResolvedValue({ ...MATCHING_ON_CHAIN, from: '0x9999999999999999999999999999999999999a' });
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockedPrisma.tradeTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects an already-visible transaction whose destination does not match the quoted router/contract', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      mockGetTransactionDetails.mockResolvedValue({ ...MATCHING_ON_CHAIN, to: '0x0000000000000000000000000000000000dead' });
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects an already-visible transaction whose value or calldata does not match the quote', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      mockGetTransactionDetails.mockResolvedValue({ ...MATCHING_ON_CHAIN, data: '0x00' });
+
+      await expect(
+        service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('allows submission through when the transaction is not yet visible to our RPC (a very recent broadcast) — refreshStatus is the authoritative gate', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
+      (mockedPrisma.tradeTransaction.create as jest.Mock).mockResolvedValue(fakeTransactionRow());
+      mockGetTransactionDetails.mockResolvedValue(null);
+
+      const dto = await service.submitTransaction({ userId: USER_ID, walletAddress: WALLET, quoteId: 'quote-1', txHash: TX_HASH });
+
+      expect(dto.status).toBe('PENDING');
+    });
+
+    it('creates a PENDING transaction row from a valid, owned quote whose on-chain details already match', async () => {
       (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.tradeQuote.findUnique as jest.Mock).mockResolvedValue(fakeQuote());
       (mockedPrisma.tradeTransaction.create as jest.Mock).mockResolvedValue(fakeTransactionRow());
@@ -182,14 +294,14 @@ describe('TransactionService', () => {
     });
   });
 
-  describe('getTransaction', () => {
+  describe('getTransaction / refreshStatus', () => {
     it('404s when the transaction does not belong to the caller', async () => {
       (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(fakeTransactionRow({ userId: 'someone-else' }));
 
       await expect(service.getTransaction(USER_ID, 'tx-1')).rejects.toThrow(NotFoundException);
     });
 
-    it('refreshes a PENDING transaction to CONFIRMED from a real receipt before returning it', async () => {
+    it('refreshes a PENDING transaction to CONFIRMED from a real receipt whose on-chain details match the persisted quote', async () => {
       (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(fakeTransactionRow());
       mockGetReceiptStatus.mockResolvedValue('success');
       (mockedPrisma.tradeTransaction.update as jest.Mock).mockResolvedValue(fakeTransactionRow({ status: 'CONFIRMED', confirmedAt: new Date() }));
@@ -200,6 +312,48 @@ describe('TransactionService', () => {
       expect(mockedPrisma.tradeTransaction.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ status: 'CONFIRMED' }) }),
       );
+    });
+
+    it('never confirms a successful receipt for an unrelated transaction — the core transaction-integrity guarantee', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(fakeTransactionRow());
+      mockGetReceiptStatus.mockResolvedValue('success');
+      // A real, successful receipt — but sent from a completely different wallet than the
+      // one this trade was quoted for. Exactly the "arbitrary successful hash" attack.
+      mockGetTransactionDetails.mockResolvedValue({ ...MATCHING_ON_CHAIN, from: '0x9999999999999999999999999999999999999a' });
+      (mockedPrisma.tradeTransaction.update as jest.Mock).mockResolvedValue(
+        fakeTransactionRow({ status: 'FAILED', failureReason: 'On-chain transaction does not match the reviewed trade' }),
+      );
+
+      const dto = await service.getTransaction(USER_ID, 'tx-1');
+
+      expect(dto.status).toBe('FAILED');
+      expect(mockedPrisma.tradeTransaction.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', failureReason: expect.stringContaining('does not match') }) }),
+      );
+      // Decisive: CONFIRMED must never appear in any update call for this transaction.
+      const updateCalls = (mockedPrisma.tradeTransaction.update as jest.Mock).mock.calls;
+      expect(updateCalls.every((call) => call[0].data.status !== 'CONFIRMED')).toBe(true);
+    });
+
+    it('never confirms when the on-chain transaction cannot be read at all, even with a successful receipt', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(fakeTransactionRow());
+      mockGetReceiptStatus.mockResolvedValue('success');
+      mockGetTransactionDetails.mockResolvedValue(null);
+      (mockedPrisma.tradeTransaction.update as jest.Mock).mockResolvedValue(fakeTransactionRow({ status: 'FAILED' }));
+
+      const dto = await service.getTransaction(USER_ID, 'tx-1');
+
+      expect(dto.status).not.toBe('CONFIRMED');
+    });
+
+    it('never confirms when the persisted quote itself has an unparseable unsignedTx', async () => {
+      (mockedPrisma.tradeTransaction.findUnique as jest.Mock).mockResolvedValue(fakeTransactionRow({ quote: { unsignedTx: { garbage: true } } }));
+      mockGetReceiptStatus.mockResolvedValue('success');
+      (mockedPrisma.tradeTransaction.update as jest.Mock).mockResolvedValue(fakeTransactionRow({ status: 'FAILED' }));
+
+      const dto = await service.getTransaction(USER_ID, 'tx-1');
+
+      expect(dto.status).not.toBe('CONFIRMED');
     });
 
     it('marks a reverted receipt as FAILED, never as a silent success', async () => {
