@@ -10,6 +10,7 @@ import { prisma } from '@fomo/db';
 import { ACTIVITY_REALTIME_CHANNEL, normalizeEvmAddress } from '@fomo/domain';
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
+import { NotificationFanoutService, type InsertedSwap } from '../notifications/notification-fanout.service';
 import { BASE_SEED_MARKETS, USDC_ADDRESS_BASE, type SeedMarket } from './seed-markets';
 
 /** Raw candle granularity — see the Candle model comment in schema.prisma. */
@@ -42,6 +43,7 @@ export interface MarketIngestionConfig {
 export class MarketIngestionService {
   private readonly poolReader: UniswapV3PoolReader;
   private readonly tokenReader: EvmChainDataProvider;
+  private readonly fanout: NotificationFanoutService;
   private chainId: number | null = null;
 
   constructor(
@@ -49,12 +51,14 @@ export class MarketIngestionService {
     rpcUrl: string,
     private readonly logger: Logger,
     private readonly redis: Redis,
+    whaleTradeUsdThreshold: number,
   ) {
     this.poolReader = new UniswapV3PoolReader({ rpcUrl });
     this.tokenReader = new EvmChainDataProvider({
       chain: { identifier: config.chainIdentifier, name: config.chainName, nativeSymbol: config.chainNativeSymbol },
       rpcUrl,
     });
+    this.fanout = new NotificationFanoutService(redis, logger, whaleTradeUsdThreshold);
   }
 
   /** Idempotent — upserts the chain, tokens, and markets. Safe to call every tick. */
@@ -373,6 +377,7 @@ export class MarketIngestionService {
           await prisma.swap.createMany({ data: rows, skipDuplicates: true });
           totalSwaps += rows.length;
           await this.publishNewActivity(market.id, rows.length);
+          await this.notifyOnInsertedSwaps(rows);
         }
 
         cursor = chunkEnd;
@@ -396,6 +401,41 @@ export class MarketIngestionService {
     // priceChange24hPct decay correctly as old activity ages out of the 24h window rather
     // than holding a stale high-water mark forever. See recomputeRollups.
     await this.recomputeRollups(market.id);
+
+    // Trending depends only on this market's own now-fresh rollup, so it's checked
+    // immediately after — see NotificationFanoutService#checkTrendingTransition.
+    try {
+      await this.fanout.checkTrendingTransition(market.id);
+    } catch (error) {
+      this.logger.error({ err: error, tokenMarketId: market.id }, 'Trending-transition notification check failed — indexing is unaffected');
+    }
+  }
+
+  /**
+   * FOLLOWED_TRADER_TRADE/WHALE_TRADE notifications, fired from the swaps this tick just
+   * persisted — see docs/NOTIFICATIONS.md. `createMany` above doesn't return inserted ids
+   * (same limitation noted throughout this file for wallets), so they're recovered here via
+   * the natural `(chain_id, tx_hash, log_index)` unique key before fan-out can reference
+   * them. Never allowed to fail the tick — a notification bug must not break indexing.
+   */
+  private async notifyOnInsertedSwaps(rows: Prisma.SwapCreateManyInput[]): Promise<void> {
+    try {
+      const inserted = await prisma.swap.findMany({
+        where: { OR: rows.map((r) => ({ chainId: r.chainId, txHash: r.txHash, logIndex: r.logIndex })) },
+        select: { id: true, txHash: true, logIndex: true },
+      });
+      const idByKey = new Map(inserted.map((s) => [`${s.txHash}:${s.logIndex}`, s.id]));
+      const insertedSwaps: InsertedSwap[] = rows.flatMap((r) => {
+        const id = idByKey.get(`${r.txHash}:${r.logIndex}`);
+        if (!id) return [];
+        return [{ id, tokenMarketId: r.tokenMarketId, traderAddress: r.traderAddress ?? null, amountUsd: Number(r.volumeUsd) }];
+      });
+
+      await this.fanout.notifyFollowedTraderTrades(insertedSwaps);
+      await this.fanout.notifyWhaleTrades(insertedSwaps);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Swap-triggered notification fan-out failed — indexing is unaffected');
+    }
   }
 
   /**

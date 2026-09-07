@@ -13,7 +13,7 @@ import { TraderSearchQueryDto } from './dto/trader-search-query.dto';
 import { ActivityService } from './services/activity.service';
 import { FollowService } from './services/follow.service';
 import { LikeService } from './services/like.service';
-import { RealtimeService, type ActivityPing } from './services/realtime.service';
+import { RealtimeService, type ActivityPing } from '../realtime/realtime.service';
 import { TraderService } from './services/trader.service';
 import { TrendingService } from './services/trending.service';
 
@@ -54,7 +54,7 @@ export class SocialController {
    *  needs the auth EventSource can't attach anyway. See docs/SOCIAL.md#realtime. */
   @Sse('activity/stream')
   streamActivity(): Observable<MessageEvent> {
-    const activity$ = this.realtime.events$.pipe(
+    const activity$ = this.realtime.activityEvents$.pipe(
       map((ping: ActivityPing): MessageEvent => ({ type: 'activity', data: ping })),
     );
     // Idle SSE connections get silently dropped by some proxies/load balancers; a periodic

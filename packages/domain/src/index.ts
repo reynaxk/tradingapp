@@ -7,3 +7,4 @@ export * from './wallet';
 export * from './social';
 export * from './wallet-auth';
 export * from './trading';
+export * from './notifications';

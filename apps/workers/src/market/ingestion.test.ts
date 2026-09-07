@@ -17,13 +17,39 @@ const mockPrisma = vi.hoisted(() => ({
   },
   wallet: {
     createMany: vi.fn(),
+    findMany: vi.fn(),
   },
   swap: {
     createMany: vi.fn(),
+    findMany: vi.fn(),
   },
   candle: {
     aggregate: vi.fn(),
     findFirst: vi.fn(),
+  },
+  // Phase 4 notification fan-out (see notification-fanout.service.ts) — defaulted to
+  // "nothing to do" so these tests, which aren't exercising notification behavior, don't
+  // have to know about it. See notification-fanout.service.test.ts for real coverage.
+  follow: {
+    findMany: vi.fn(),
+  },
+  tradeTransaction: {
+    findMany: vi.fn(),
+  },
+  notification: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+  },
+  notificationPreference: {
+    findMany: vi.fn(),
+  },
+  tokenTrendingState: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    upsert: vi.fn(),
+  },
+  user: {
+    findMany: vi.fn(),
   },
   $executeRaw: vi.fn(),
   $queryRaw: vi.fn(),
@@ -79,6 +105,7 @@ function newService() {
     'http://127.0.0.1:0',
     fakeLogger,
     fakeRedis,
+    25_000,
   );
   (service as unknown as { chainId: number }).chainId = 1;
   return service;
@@ -98,6 +125,23 @@ beforeEach(() => {
   // and restores every UniswapV3PoolReader.prototype spy from the previous test to its
   // real implementation, so each test starts from a clean slate.
   vi.restoreAllMocks();
+
+  // Phase 4 notification fan-out defaults to "nothing to do" for every test in this file —
+  // none of them are exercising notification behavior (see
+  // notification-fanout.service.test.ts for that), and NotificationFanoutService's calls
+  // are wrapped in try/catch by ingestion.ts regardless, so an unconfigured mock here would
+  // just be silently-caught noise rather than a real signal.
+  mockPrisma.swap.findMany.mockResolvedValue([]);
+  mockPrisma.wallet.findMany.mockResolvedValue([]);
+  mockPrisma.follow.findMany.mockResolvedValue([]);
+  mockPrisma.tradeTransaction.findMany.mockResolvedValue([]);
+  mockPrisma.notification.findMany.mockResolvedValue([]);
+  mockPrisma.notification.createMany.mockResolvedValue({ count: 0 });
+  mockPrisma.notificationPreference.findMany.mockResolvedValue([]);
+  mockPrisma.tokenTrendingState.findUnique.mockResolvedValue(null);
+  mockPrisma.tokenTrendingState.create.mockResolvedValue({});
+  mockPrisma.tokenTrendingState.upsert.mockResolvedValue({});
+  mockPrisma.user.findMany.mockResolvedValue([]);
 });
 
 describe('MarketIngestionService.ingestSwaps — cursor safety', () => {
