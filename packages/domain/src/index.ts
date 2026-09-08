@@ -9,3 +9,4 @@ export * from './wallet-auth';
 export * from './trading';
 export * from './notifications';
 export * from './trader-intelligence';
+export * from './retention';

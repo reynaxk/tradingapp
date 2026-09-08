@@ -22,4 +22,8 @@ export class UpdatePreferencesDto {
   @IsOptional()
   @IsBoolean()
   trendingTokens?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  watchedTokenActivity?: boolean;
 }

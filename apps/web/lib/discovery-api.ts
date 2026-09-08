@@ -1,4 +1,11 @@
-import type { RisingToken, RisingTrader, SocialActivity, TokenTraderConnection, TopTrader, TraderTokenStat } from '@fomo/domain';
+import type {
+  RisingToken,
+  RisingTrader,
+  SocialActivity,
+  TokenTraderConnection,
+  TopTrader,
+  TraderTokenStat,
+} from '@fomo/domain';
 import { apiGet } from './market-api';
 
 /**
@@ -30,11 +37,28 @@ export async function fetchRising(limit = 10): Promise<RisingResult> {
 }
 
 export async function fetchTraderTokens(address: string, limit = 20): Promise<TraderTokenStat[]> {
-  const result = await apiGet<TraderTokenStat[]>(`/social/traders/${encodeURIComponent(address)}/tokens?limit=${limit}`, 20);
+  const result = await apiGet<TraderTokenStat[]>(
+    `/social/traders/${encodeURIComponent(address)}/tokens?limit=${limit}`,
+    20,
+  );
   return result ?? [];
 }
 
-export async function fetchTokenTraders(address: string, limit = 10): Promise<TokenTraderConnection> {
-  const result = await apiGet<TokenTraderConnection>(`/market/tokens/${encodeURIComponent(address)}/traders?limit=${limit}`, 20);
-  return result ?? { uniqueTraders24h: null, recentTraders: [], activeTraders: [], recentLargeTrades: [] };
+export async function fetchTokenTraders(
+  address: string,
+  limit = 10,
+): Promise<TokenTraderConnection> {
+  const result = await apiGet<TokenTraderConnection>(
+    `/market/tokens/${encodeURIComponent(address)}/traders?limit=${limit}`,
+    20,
+  );
+  return (
+    result ?? {
+      uniqueTraders24h: null,
+      recentTraders: [],
+      activeTraders: [],
+      recentLargeTrades: [],
+      watcherCount: 0,
+    }
+  );
 }

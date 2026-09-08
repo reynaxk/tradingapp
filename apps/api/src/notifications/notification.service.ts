@@ -54,7 +54,10 @@ export class NotificationService {
 
   /** Called from FollowService.follow() on genuine (non-duplicate) follow creation. */
   async notifyFollow(followerUserId: string, followedWalletAddress: string): Promise<void> {
-    const wallet = await prisma.wallet.findUnique({ where: { address: followedWalletAddress }, select: { userId: true } });
+    const wallet = await prisma.wallet.findUnique({
+      where: { address: followedWalletAddress },
+      select: { userId: true },
+    });
     if (!wallet?.userId) return; // followed wallet has no linked account — no one to notify
     if (wallet.userId === followerUserId) return; // never self-notify
 
@@ -70,9 +73,15 @@ export class NotificationService {
   }
 
   /** Called from LikeService.like() on genuine (non-duplicate) like creation. */
-  async notifyLike(likerUserId: string, swap: { id: string; traderAddress: string | null }): Promise<void> {
+  async notifyLike(
+    likerUserId: string,
+    swap: { id: string; traderAddress: string | null },
+  ): Promise<void> {
     if (!swap.traderAddress) return; // pre-Phase-2 swap with no captured trader — no one to notify
-    const wallet = await prisma.wallet.findUnique({ where: { address: swap.traderAddress }, select: { userId: true } });
+    const wallet = await prisma.wallet.findUnique({
+      where: { address: swap.traderAddress },
+      select: { userId: true },
+    });
     if (!wallet?.userId) return;
     if (wallet.userId === likerUserId) return; // never self-notify
 
@@ -109,12 +118,18 @@ export class NotificationService {
       created = await prisma.notification.create({ data: input });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        this.logger.debug({ userId: input.userId, type: input.type }, 'Duplicate notification suppressed by idempotency key');
+        this.logger.debug(
+          { userId: input.userId, type: input.type },
+          'Duplicate notification suppressed by idempotency key',
+        );
         return;
       }
       throw error;
     }
-    this.logger.info({ notificationId: created.id, userId: created.userId, type: created.type }, 'Notification created');
+    this.logger.info(
+      { notificationId: created.id, userId: created.userId, type: created.type },
+      'Notification created',
+    );
     await this.publish({
       userId: created.userId,
       notificationId: created.id,
@@ -139,7 +154,11 @@ export class NotificationService {
   // from the authenticated session; none of them accept it from request input.
   // ---------------------------------------------------------------------------------------
 
-  async list(userId: string, rawCursor: string | undefined, limit: number): Promise<NotificationPage> {
+  async list(
+    userId: string,
+    rawCursor: string | undefined,
+    limit: number,
+  ): Promise<NotificationPage> {
     const cursor = rawCursor ? decodeNotificationCursor(rawCursor) : null;
     const cursorWhere: Prisma.NotificationWhereInput = cursor
       ? {
@@ -161,7 +180,9 @@ export class NotificationService {
     const page = hasMore ? rows.slice(0, limit) : rows;
     const last = page[page.length - 1];
     const nextCursor =
-      hasMore && last ? encodeNotificationCursor({ createdAt: last.createdAt.toISOString(), id: last.id }) : null;
+      hasMore && last
+        ? encodeNotificationCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+        : null;
 
     return { items: page.map(toNotificationDto), nextCursor };
   }
@@ -181,7 +202,10 @@ export class NotificationService {
   }
 
   async markAllRead(userId: string): Promise<void> {
-    await prisma.notification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+    await prisma.notification.updateMany({
+      where: { userId, readAt: null },
+      data: { readAt: new Date() },
+    });
   }
 
   // ---------------------------------------------------------------------------------------
@@ -198,11 +222,15 @@ export class NotificationService {
           followedTraderTrades: row.followedTraderTrades,
           whaleTrades: row.whaleTrades,
           trendingTokens: row.trendingTokens,
+          watchedTokenActivity: row.watchedTokenActivity,
         }
       : NOTIFICATION_DEFAULTS.preferenceDefaults;
   }
 
-  async updatePreferences(userId: string, patch: Partial<NotificationPreferences>): Promise<NotificationPreferences> {
+  async updatePreferences(
+    userId: string,
+    patch: Partial<NotificationPreferences>,
+  ): Promise<NotificationPreferences> {
     const current = await this.getPreferences(userId);
     const next = { ...current, ...patch };
     const row = await prisma.notificationPreference.upsert({
@@ -216,6 +244,7 @@ export class NotificationService {
       followedTraderTrades: row.followedTraderTrades,
       whaleTrades: row.whaleTrades,
       trendingTokens: row.trendingTokens,
+      watchedTokenActivity: row.watchedTokenActivity,
     };
   }
 
@@ -236,6 +265,8 @@ export class NotificationService {
         return prefs.whaleTrades;
       case 'TRENDING_TOKEN':
         return prefs.trendingTokens;
+      case 'WATCHED_TOKEN_ACTIVITY':
+        return prefs.watchedTokenActivity;
       default: {
         const exhaustive: never = type;
         throw new Error(`Unhandled notification type: ${String(exhaustive)}`);
@@ -250,7 +281,12 @@ export class NotificationService {
 
   async issueStreamTicket(userId: string): Promise<string> {
     const ticket = randomBytes(32).toString('hex');
-    await this.redis.set(`${STREAM_TICKET_PREFIX}${ticket}`, userId, 'EX', STREAM_TICKET_TTL_SECONDS);
+    await this.redis.set(
+      `${STREAM_TICKET_PREFIX}${ticket}`,
+      userId,
+      'EX',
+      STREAM_TICKET_TTL_SECONDS,
+    );
     return ticket;
   }
 

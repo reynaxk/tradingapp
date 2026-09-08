@@ -27,11 +27,15 @@ import type { Redis } from 'ioredis';
 import { PinoLogger } from 'nestjs-pino';
 import { REDIS_CLIENT } from '../redis/redis.module';
 import { toMarketSummary, type MarketRow } from '../market/market.mapper';
+import { WatchlistService } from '../market/watchlist.service';
 import { toSocialActivity, toTopTrader } from '../social/social.mapper';
 import { ActivityService } from '../social/services/activity.service';
 
 const MARKET_INCLUDE = { token: true, quoteToken: true, chain: true } as const;
-const ACTIVITY_INCLUDE = { tokenMarket: { include: { token: true, quoteToken: true, chain: true } }, trader: true } as const;
+const ACTIVITY_INCLUDE = {
+  tokenMarket: { include: { token: true, quoteToken: true, chain: true } },
+  trader: true,
+} as const;
 /** Bounded candidate pool for "rising traders" — never "every trader in the database," see
  *  the query comment on risingTraders below. */
 const RISING_TRADER_CANDIDATE_LIMIT = 100;
@@ -50,6 +54,7 @@ export class DiscoveryService {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly logger: PinoLogger,
     private readonly activity: ActivityService,
+    private readonly watchlist: WatchlistService,
   ) {
     this.logger.setContext('DiscoveryService');
   }
@@ -60,7 +65,9 @@ export class DiscoveryService {
   async activeTraders(limit: number): Promise<TopTrader[]> {
     return this.cached(`discovery:active-traders:${limit}`, async () => {
       const since24h = new Date(Date.now() - 24 * 60 * 60_000);
-      const rows = await prisma.$queryRaw<{ trader_address: string; volume_usd: string; trade_count: bigint }[]>`
+      const rows = await prisma.$queryRaw<
+        { trader_address: string; volume_usd: string; trade_count: bigint }[]
+      >`
         SELECT trader_address, SUM(volume_usd) AS volume_usd, COUNT(*) AS trade_count
         FROM swaps
         WHERE trader_address IS NOT NULL AND block_timestamp >= ${since24h}
@@ -71,9 +78,18 @@ export class DiscoveryService {
       `;
       if (rows.length === 0) return [];
 
-      const wallets = await prisma.wallet.findMany({ where: { address: { in: rows.map((r) => r.trader_address) } } });
+      const wallets = await prisma.wallet.findMany({
+        where: { address: { in: rows.map((r) => r.trader_address) } },
+      });
       const byAddress = new Map(wallets.map((w) => [w.address, w]));
-      return rows.map((r) => toTopTrader(r.trader_address, byAddress.get(r.trader_address), Number(r.volume_usd), Number(r.trade_count)));
+      return rows.map((r) =>
+        toTopTrader(
+          r.trader_address,
+          byAddress.get(r.trader_address),
+          Number(r.volume_usd),
+          Number(r.trade_count),
+        ),
+      );
     });
   }
 
@@ -104,13 +120,18 @@ export class DiscoveryService {
       });
       if (states.length === 0) return [];
 
-      const markets = await prisma.tokenMarket.findMany({ where: { id: { in: states.map((s) => s.tokenMarketId) } }, include: MARKET_INCLUDE });
+      const markets = await prisma.tokenMarket.findMany({
+        where: { id: { in: states.map((s) => s.tokenMarketId) } },
+        include: MARKET_INCLUDE,
+      });
       const byId = new Map(markets.map((m) => [m.id, m]));
 
       return states.flatMap((s) => {
         const market = byId.get(s.tokenMarketId);
         if (!market || !s.becameTrendingAt) return [];
-        return [{ market: toMarketSummary(market), becameTrendingAt: s.becameTrendingAt.toISOString() }];
+        return [
+          { market: toMarketSummary(market), becameTrendingAt: s.becameTrendingAt.toISOString() },
+        ];
       });
     });
   }
@@ -137,8 +158,14 @@ export class DiscoveryService {
       if (candidates.length === 0) return [];
 
       const [totals, wallets] = await Promise.all([
-        prisma.swap.groupBy({ by: ['traderAddress'], where: { traderAddress: { in: candidates.map((c) => c.trader_address) } }, _count: { _all: true } }),
-        prisma.wallet.findMany({ where: { address: { in: candidates.map((c) => c.trader_address) } } }),
+        prisma.swap.groupBy({
+          by: ['traderAddress'],
+          where: { traderAddress: { in: candidates.map((c) => c.trader_address) } },
+          _count: { _all: true },
+        }),
+        prisma.wallet.findMany({
+          where: { address: { in: candidates.map((c) => c.trader_address) } },
+        }),
       ]);
       const totalByAddress = new Map(totals.map((t) => [t.traderAddress!, t._count._all]));
       const walletByAddress = new Map(wallets.map((w) => [w.address, w]));
@@ -148,14 +175,16 @@ export class DiscoveryService {
         if (!wallet) return [];
         const totalSwaps = totalByAddress.get(c.trader_address) ?? 0;
         const tradeCount24h = Number(c.trade_count);
-        if (!isRisingTrader({ tradeCount24h, totalSwaps, firstSeenAt: wallet.firstSeenAt })) return [];
+        if (!isRisingTrader({ tradeCount24h, totalSwaps, firstSeenAt: wallet.firstSeenAt }))
+          return [];
         return [
           {
             address: c.trader_address,
             displayName: wallet.displayName,
             avatarUrl: wallet.avatarUrl,
             tradeCount24h,
-            activityFrequencyPerDay: computeActivityFrequencyPerDay(totalSwaps, wallet.firstSeenAt) ?? 0,
+            activityFrequencyPerDay:
+              computeActivityFrequencyPerDay(totalSwaps, wallet.firstSeenAt) ?? 0,
           },
         ];
       });
@@ -190,13 +219,20 @@ export class DiscoveryService {
     const candidateIds = candidates.map((c) => c.row.id);
     const since = new Date(Date.now() - FOLLOWED_TRADER_SIGNAL_WINDOW_HOURS * 60 * 60_000);
 
-    const follows = await prisma.follow.findMany({ where: { userId }, select: { walletAddress: true } });
+    const follows = await prisma.follow.findMany({
+      where: { userId },
+      select: { walletAddress: true },
+    });
     const followedAddresses = follows.map((f) => f.walletAddress);
 
-    const [followedTraderSwaps, viewerTrades, viewerLikedSwaps] = await Promise.all([
+    const [followedTraderSwaps, viewerTrades, viewerLikedSwaps, watchedSet] = await Promise.all([
       followedAddresses.length > 0
         ? prisma.swap.findMany({
-            where: { tokenMarketId: { in: candidateIds }, traderAddress: { in: followedAddresses }, blockTimestamp: { gte: since } },
+            where: {
+              tokenMarketId: { in: candidateIds },
+              traderAddress: { in: followedAddresses },
+              blockTimestamp: { gte: since },
+            },
             orderBy: { blockTimestamp: 'desc' },
             include: { trader: true },
           })
@@ -210,6 +246,7 @@ export class DiscoveryService {
         where: { userId, swap: { tokenMarketId: { in: candidateIds } } },
         select: { swap: { select: { tokenMarketId: true } } },
       }),
+      this.watchlist.getWatchedSet(userId, candidateIds),
     ]);
 
     // One pass over each bounded signal result to build per-token lookup maps — never a
@@ -237,6 +274,7 @@ export class DiscoveryService {
         viewerHasTraded: viewerTradedSet.has(row.id),
         viewerLikeCount: likeCountByToken.get(row.id) ?? 0,
         hoursSinceRelevantActivity: followedSignal?.hoursSince ?? null,
+        isWatched: watchedSet.has(row.id),
       };
       return { row, personalizationScore: computePersonalizationScore(signals), signals };
     });
@@ -252,8 +290,15 @@ export class DiscoveryService {
 
   /** See ActivityService#getPersonalizedFeedCandidates for the query itself — this layer
    *  only adds the "why this is here" reason per item. */
-  async personalizedFeed(userId: string, cursor: string | undefined, limit: number): Promise<PersonalizedFeedPage> {
-    const follows = await prisma.follow.findMany({ where: { userId }, select: { walletAddress: true } });
+  async personalizedFeed(
+    userId: string,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<PersonalizedFeedPage> {
+    const follows = await prisma.follow.findMany({
+      where: { userId },
+      select: { walletAddress: true },
+    });
     const followedSet = new Set(follows.map((f) => f.walletAddress));
 
     const page = await this.activity.getPersonalizedFeedCandidates({ userId, cursor, limit });
@@ -261,7 +306,11 @@ export class DiscoveryService {
     const items: PersonalizedFeedItem[] = page.items.map((item) => {
       const isFollowed = item.trader.address !== null && followedSet.has(item.trader.address);
       const reasonCode: FeedReasonCode = isFollowed ? 'FOLLOWED_TRADER' : 'GENERAL_DISCOVERY';
-      return { activity: item, reasonCode, reason: feedReasonText(reasonCode, item.trader.displayName) };
+      return {
+        activity: item,
+        reasonCode,
+        reason: feedReasonText(reasonCode, item.trader.displayName),
+      };
     });
 
     return { items, nextCursor: page.nextCursor };
@@ -283,7 +332,10 @@ export class DiscoveryService {
     try {
       await this.redis.set(key, JSON.stringify(value), 'EX', DISCOVERY_CACHE_TTL_SECONDS);
     } catch (error) {
-      this.logger.warn({ err: error, key }, 'Discovery cache write failed — result still served, just not cached');
+      this.logger.warn(
+        { err: error, key },
+        'Discovery cache write failed — result still served, just not cached',
+      );
     }
 
     return value;
@@ -292,6 +344,10 @@ export class DiscoveryService {
 
 async function batchLikeCounts(swapIds: string[]): Promise<Map<string, number>> {
   if (swapIds.length === 0) return new Map();
-  const counts = await prisma.activityLike.groupBy({ by: ['swapId'], where: { swapId: { in: swapIds } }, _count: { _all: true } });
+  const counts = await prisma.activityLike.groupBy({
+    by: ['swapId'],
+    where: { swapId: { in: swapIds } },
+    _count: { _all: true },
+  });
   return new Map(counts.map((c) => [c.swapId, c._count._all]));
 }

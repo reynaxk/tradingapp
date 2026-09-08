@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
+import { MarketModule } from '../market/market.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ActivityService } from './services/activity.service';
@@ -22,9 +23,12 @@ import { SocialController } from './social.controller';
  * `ActivityService` is exported so Phase 5's DiscoveryModule can reuse its paginated
  * swap-backed feed machinery for the personalized feed (see
  * ActivityService#getPersonalizedFeedCandidates) instead of a second implementation.
+ *
+ * `MarketModule` (Phase 6) so `GET /social/watchlist` can reuse `WatchlistService` rather
+ * than a second TokenWatch query implementation — see docs/PHASE6_RETENTION_SOCIAL.md#watchlists.
  */
 @Module({
-  imports: [IdentityModule, RealtimeModule, NotificationsModule],
+  imports: [IdentityModule, RealtimeModule, NotificationsModule, MarketModule],
   controllers: [SocialController],
   providers: [ActivityService, FollowService, LikeService, TraderService, TrendingService],
   exports: [ActivityService],

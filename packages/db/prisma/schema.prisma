@@ -123,6 +123,7 @@ model TokenMarket {
   tradeTransactions TradeTransaction[]
   notifications     Notification[]
   trendingState     TokenTrendingState?
+  watches           TokenWatch[]
 
   @@unique([chainId, pairAddress])
   @@index([tokenId])
@@ -289,6 +290,19 @@ model User {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now()) @map("created_at")
 
+  /// Phase 6 — see docs/PHASE6_RETENTION_SOCIAL.md#return-loop. Null until the user's
+  /// first discover-page visit that calls `POST /discovery/mark-seen`; a plain overwrite on
+  /// every call (never a compare-and-swap), which is all "race-safe across multiple browser
+  /// sessions" needs here — the last writer simply wins, and every writer is this same
+  /// user, so there is no real conflict to resolve, just concurrent writes settling on one
+  /// final value.
+  lastDiscoverySeenAt DateTime? @map("last_discovery_seen_at")
+  /// Consecutive UTC calendar days with at least one `mark-seen` call — see
+  /// computeStreak in @fomo/domain for the exact rule. Deliberately the only "engagement"
+  /// number in this product — no points, no XP, no badges.
+  currentStreakDays   Int       @default(0) @map("current_streak_days")
+  longestStreakDays   Int       @default(0) @map("longest_streak_days")
+
   wallets                Wallet[]
   follows                Follow[]
   likes                  ActivityLike[]
@@ -298,6 +312,8 @@ model User {
   notifications          Notification[]          @relation("NotificationRecipient")
   notificationActorFor   Notification[]          @relation("NotificationActorUser")
   notificationPreference NotificationPreference?
+  tokenWatches           TokenWatch[]
+  savedSearches          SavedSearch[]
 
   @@map("users")
 }
@@ -485,6 +501,13 @@ enum NotificationType {
   FOLLOWED_TRADER_TRADE
   WHALE_TRADE
   TRENDING_TOKEN
+  /// Phase 6 — see docs/PHASE6_RETENTION_SOCIAL.md#notification-integration. A large trade
+  /// in a token the recipient is *watching* (TokenWatch), scoped to watchers who aren't
+  /// already covered by WHALE_TRADE (past traders of that token) — see the fan-out comment
+  /// in NotificationFanoutService#notifyWatchedTokenActivity for why those two recipient
+  /// sets are deliberately disjoint. Never fired for every swap — same threshold + cooldown
+  /// discipline as WHALE_TRADE.
+  WATCHED_TOKEN_ACTIVITY
 }
 
 /// One notification for `user` (the recipient — always resolved from the authenticated
@@ -552,6 +575,9 @@ model NotificationPreference {
   followedTraderTrades Boolean  @default(true) @map("followed_trader_trades")
   whaleTrades          Boolean  @default(true) @map("whale_trades")
   trendingTokens       Boolean  @default(true) @map("trending_tokens")
+  /// Phase 6 — gates WATCHED_TOKEN_ACTIVITY, same opt-out-by-default convention as every
+  /// other preference here.
+  watchedTokenActivity Boolean  @default(true) @map("watched_token_activity")
   updatedAt            DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -577,4 +603,50 @@ model TokenTrendingState {
   tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Cascade)
 
   @@map("token_trending_state")
+}
+
+/// Phase 6 — see docs/PHASE6_RETENTION_SOCIAL.md#watchlists. A user "watching" a token
+/// market; the row's mere existence is the fact (no extra state). Keyed by tokenMarketId,
+/// not a raw token id, matching every other per-token-market state table (Notification,
+/// TokenTrendingState, TradeQuote) rather than the illustrative field name in the spec.
+/// Add/remove is idempotent via the unique constraint below — see WatchlistService, which
+/// treats a P2002 on create as a successful no-op rather than an error, the same pattern
+/// Follow and ActivityLike already use.
+model TokenWatch {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  tokenMarketId String   @map("token_market_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenMarket TokenMarket @relation(fields: [tokenMarketId], references: [id], onDelete: Cascade)
+
+  /// Enforces idempotent watch/unwatch and is what a repeat "watch" call relies on.
+  @@unique([userId, tokenMarketId])
+  /// Serves "my watchlist, newest first" (GET /social/watchlist).
+  @@index([userId, createdAt])
+  /// Serves the bounded fan-out query in NotificationFanoutService#notifyWatchedTokenActivity
+  /// and the aggregate watched-by count on a token's detail page.
+  @@index([tokenMarketId])
+  @@map("token_watches")
+}
+
+/// Phase 6 — see docs/PHASE6_RETENTION_SOCIAL.md#saved-searches. A lightweight bookmark of a
+/// discovery/market query string, nothing more — no stored result set, no scheduled re-run,
+/// no analytics. `SavedSearchService` enforces a max-per-user cap (see MAX_SAVED_SEARCHES in
+/// @fomo/domain) at the service layer rather than in the schema, the same way other
+/// business-rule bounds in this codebase are enforced above the DB.
+model SavedSearch {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  query       String
+  displayName String?  @map("display_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Serves "my saved searches, newest first" and the per-user count check backing the cap.
+  @@index([userId, createdAt])
+  @@map("saved_searches")
 }

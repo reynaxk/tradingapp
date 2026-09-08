@@ -7,7 +7,9 @@ import { AppModule } from '../src/app.module';
 import { createTestApp } from './test-app';
 
 async function buildApp(): Promise<INestApplication> {
-  const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const moduleRef: TestingModule = await Test.createTestingModule({
+    imports: [AppModule],
+  }).compile();
   return createTestApp(moduleRef);
 }
 
@@ -25,7 +27,10 @@ async function linkVerifiedWallet(app: INestApplication, token: string) {
   const account = privateKeyToAccount(generatePrivateKey());
   const auth = { Authorization: `Bearer ${token}` };
 
-  const challenge = await request(app.getHttpServer()).post('/v1/identity/wallet/challenge').set(auth).send({ address: account.address });
+  const challenge = await request(app.getHttpServer())
+    .post('/v1/identity/wallet/challenge')
+    .set(auth)
+    .send({ address: account.address });
   expect(challenge.status).toBe(201);
 
   const signature = await account.signMessage({ message: challenge.body.message });
@@ -71,22 +76,46 @@ describe('Notifications (e2e) — follow notifications', () => {
     const chain = await prisma.chain.upsert({
       where: { identifier: chainIdentifier },
       update: {},
-      create: { identifier: chainIdentifier, name: 'Base', nativeSymbol: 'ETH', rpcConfigKey: 'CHAIN_RPC_URL' },
+      create: {
+        identifier: chainIdentifier,
+        name: 'Base',
+        nativeSymbol: 'ETH',
+        rpcConfigKey: 'CHAIN_RPC_URL',
+      },
     });
     const baseToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: baseAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'NOTFA', name: 'Notif Token A', decimals: 18 },
+      create: {
+        chainId: chain.id,
+        contractAddress: baseAddress,
+        symbol: 'NOTFA',
+        name: 'Notif Token A',
+        decimals: 18,
+      },
     });
     const quoteToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: quoteAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'NOTFAQ', name: 'Notif Quote A', decimals: 6 },
+      create: {
+        chainId: chain.id,
+        contractAddress: quoteAddress,
+        symbol: 'NOTFAQ',
+        name: 'Notif Quote A',
+        decimals: 6,
+      },
     });
     const market = await prisma.tokenMarket.upsert({
       where: { chainId_pairAddress: { chainId: chain.id, pairAddress: poolAddress } },
       update: {},
-      create: { chainId: chain.id, tokenId: baseToken.id, quoteTokenId: quoteToken.id, dex: 'uniswap-v3', pairAddress: poolAddress, feeTier: 3000 },
+      create: {
+        chainId: chain.id,
+        tokenId: baseToken.id,
+        quoteTokenId: quoteToken.id,
+        dex: 'uniswap-v3',
+        pairAddress: poolAddress,
+        feeTier: 3000,
+      },
     });
     tokenMarketId = market.id;
   });
@@ -101,7 +130,7 @@ describe('Notifications (e2e) — follow notifications', () => {
     await app.close();
   });
 
-  it('follow -> the followed wallet\'s owner receives a persisted, unread FOLLOW notification with a working deep link', async () => {
+  it("follow -> the followed wallet's owner receives a persisted, unread FOLLOW notification with a working deep link", async () => {
     const recipient = await issueSession(app);
     const { address: recipientAddress } = await linkVerifiedWallet(app, recipient.token);
     const recipientAuth = { Authorization: `Bearer ${recipient.token}` };
@@ -113,7 +142,10 @@ describe('Notifications (e2e) — follow notifications', () => {
     const follower = await issueSession(app);
     const { address: followerAddress } = await linkVerifiedWallet(app, follower.token);
     const followerAuth = { Authorization: `Bearer ${follower.token}` };
-    await request(app.getHttpServer()).post(`/v1/social/traders/${recipientAddress}/follow`).set(followerAuth).expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/social/traders/${recipientAddress}/follow`)
+      .set(followerAuth)
+      .expect(200);
 
     const list = await request(app.getHttpServer()).get('/v1/notifications').set(recipientAuth);
     expect(list.status).toBe(200);
@@ -123,13 +155,19 @@ describe('Notifications (e2e) — follow notifications', () => {
     expect(notif.actor.address).toBe(followerAddress);
     expect(notif.deepLink).toBe(`/trader/${followerAddress}`);
 
-    const unread = await request(app.getHttpServer()).get('/v1/notifications/unread-count').set(recipientAuth);
+    const unread = await request(app.getHttpServer())
+      .get('/v1/notifications/unread-count')
+      .set(recipientAuth);
     expect(unread.body.count).toBeGreaterThanOrEqual(1);
 
     // 7-step scenario continued: open (mark read) -> unread count decrements, persists.
-    const markRead = await request(app.getHttpServer()).post(`/v1/notifications/${notif.id}/read`).set(recipientAuth);
+    const markRead = await request(app.getHttpServer())
+      .post(`/v1/notifications/${notif.id}/read`)
+      .set(recipientAuth);
     expect(markRead.status).toBe(200);
-    const afterRead = await request(app.getHttpServer()).get('/v1/notifications').set(recipientAuth);
+    const afterRead = await request(app.getHttpServer())
+      .get('/v1/notifications')
+      .set(recipientAuth);
     const same = afterRead.body.items.find((n: { id: string }) => n.id === notif.id);
     expect(same.readAt).not.toBeNull();
   });
@@ -140,7 +178,10 @@ describe('Notifications (e2e) — follow notifications', () => {
     const follower = await issueSession(app);
     const followerAuth = { Authorization: `Bearer ${follower.token}` };
 
-    await request(app.getHttpServer()).post(`/v1/social/traders/${recipientAddress}/follow`).set(followerAuth).expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/social/traders/${recipientAddress}/follow`)
+      .set(followerAuth)
+      .expect(200);
     const before = await prisma.notification.count({ where: { type: 'FOLLOW' } });
     await request(app.getHttpServer())
       .post(`/v1/social/traders/${recipientAddress}/follow`)
@@ -155,11 +196,15 @@ describe('Notifications (e2e) — follow notifications', () => {
     const selfAuth = { Authorization: `Bearer ${self.token}` };
     const { address: ownAddress } = await linkVerifiedWallet(app, self.token);
 
-    await request(app.getHttpServer()).post(`/v1/social/traders/${ownAddress}/follow`).set(selfAuth).expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/social/traders/${ownAddress}/follow`)
+      .set(selfAuth)
+      .expect(200);
 
     const swap = await prisma.swap.create({
       data: {
-        chainId: (await prisma.tokenMarket.findUniqueOrThrow({ where: { id: tokenMarketId } })).chainId,
+        chainId: (await prisma.tokenMarket.findUniqueOrThrow({ where: { id: tokenMarketId } }))
+          .chainId,
         tokenMarketId,
         txHash: `0x${'c'.repeat(64)}`,
         logIndex: 0,
@@ -173,10 +218,15 @@ describe('Notifications (e2e) — follow notifications', () => {
         traderAddress: ownAddress,
       },
     });
-    await request(app.getHttpServer()).post(`/v1/social/activity/${swap.id}/like`).set(selfAuth).expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/social/activity/${swap.id}/like`)
+      .set(selfAuth)
+      .expect(200);
 
     const list = await request(app.getHttpServer()).get('/v1/notifications').set(selfAuth);
-    expect(list.body.items.some((n: { type: string }) => n.type === 'FOLLOW' || n.type === 'LIKE')).toBe(false);
+    expect(
+      list.body.items.some((n: { type: string }) => n.type === 'FOLLOW' || n.type === 'LIKE'),
+    ).toBe(false);
 
     await prisma.swap.delete({ where: { id: swap.id } });
   });
@@ -197,22 +247,46 @@ describe('Notifications (e2e) — like notifications and preferences', () => {
     const chain = await prisma.chain.upsert({
       where: { identifier: chainIdentifier },
       update: {},
-      create: { identifier: chainIdentifier, name: 'Base', nativeSymbol: 'ETH', rpcConfigKey: 'CHAIN_RPC_URL' },
+      create: {
+        identifier: chainIdentifier,
+        name: 'Base',
+        nativeSymbol: 'ETH',
+        rpcConfigKey: 'CHAIN_RPC_URL',
+      },
     });
     const baseToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: baseAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'NOTFB', name: 'Notif Token B', decimals: 18 },
+      create: {
+        chainId: chain.id,
+        contractAddress: baseAddress,
+        symbol: 'NOTFB',
+        name: 'Notif Token B',
+        decimals: 18,
+      },
     });
     const quoteToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: quoteAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'NOTFBQ', name: 'Notif Quote B', decimals: 6 },
+      create: {
+        chainId: chain.id,
+        contractAddress: quoteAddress,
+        symbol: 'NOTFBQ',
+        name: 'Notif Quote B',
+        decimals: 6,
+      },
     });
     const market = await prisma.tokenMarket.upsert({
       where: { chainId_pairAddress: { chainId: chain.id, pairAddress: poolAddress } },
       update: {},
-      create: { chainId: chain.id, tokenId: baseToken.id, quoteTokenId: quoteToken.id, dex: 'uniswap-v3', pairAddress: poolAddress, feeTier: 3000 },
+      create: {
+        chainId: chain.id,
+        tokenId: baseToken.id,
+        quoteTokenId: quoteToken.id,
+        dex: 'uniswap-v3',
+        pairAddress: poolAddress,
+        feeTier: 3000,
+      },
     });
     tokenMarketId = market.id;
   });
@@ -232,7 +306,8 @@ describe('Notifications (e2e) — like notifications and preferences', () => {
 
     const swap = await prisma.swap.create({
       data: {
-        chainId: (await prisma.tokenMarket.findUniqueOrThrow({ where: { id: tokenMarketId } })).chainId,
+        chainId: (await prisma.tokenMarket.findUniqueOrThrow({ where: { id: tokenMarketId } }))
+          .chainId,
         tokenMarketId,
         txHash: `0x${'d'.repeat(64)}`,
         logIndex: 0,
@@ -266,7 +341,10 @@ describe('Notifications (e2e) — like notifications and preferences', () => {
     const { address } = await linkVerifiedWallet(app, recipient.token);
     const recipientAuth = { Authorization: `Bearer ${recipient.token}` };
 
-    const prefs = await request(app.getHttpServer()).patch('/v1/notifications/preferences').set(recipientAuth).send({ follows: false });
+    const prefs = await request(app.getHttpServer())
+      .patch('/v1/notifications/preferences')
+      .set(recipientAuth)
+      .send({ follows: false });
     expect(prefs.status).toBe(200);
     expect(prefs.body.follows).toBe(false);
 
@@ -282,14 +360,25 @@ describe('Notifications (e2e) — like notifications and preferences', () => {
 
   it('GET /v1/notifications/preferences returns the shipped defaults for a session that never set any', async () => {
     const session = await issueSession(app);
-    const res = await request(app.getHttpServer()).get('/v1/notifications/preferences').set({ Authorization: `Bearer ${session.token}` });
+    const res = await request(app.getHttpServer())
+      .get('/v1/notifications/preferences')
+      .set({ Authorization: `Bearer ${session.token}` });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ follows: true, likes: true, followedTraderTrades: true, whaleTrades: true, trendingTokens: true });
+    expect(res.body).toEqual({
+      follows: true,
+      likes: true,
+      followedTraderTrades: true,
+      whaleTrades: true,
+      trendingTokens: true,
+      watchedTokenActivity: true,
+    });
   });
 
   it('POST /v1/notifications/stream-ticket issues a single-use ticket to an authenticated session', async () => {
     const session = await issueSession(app);
-    const res = await request(app.getHttpServer()).post('/v1/notifications/stream-ticket').set({ Authorization: `Bearer ${session.token}` });
+    const res = await request(app.getHttpServer())
+      .post('/v1/notifications/stream-ticket')
+      .set({ Authorization: `Bearer ${session.token}` });
     expect(res.status).toBe(201);
     expect(typeof res.body.ticket).toBe('string');
     expect(res.body.ticket.length).toBeGreaterThan(16);
@@ -354,13 +443,19 @@ describe('Notifications (e2e) — security', () => {
 
     const attacker = await issueSession(app);
     const attackerAuth = { Authorization: `Bearer ${attacker.token}` };
-    const attackerMarkRead = await request(app.getHttpServer()).post(`/v1/notifications/${notif.id}/read`).set(attackerAuth);
+    const attackerMarkRead = await request(app.getHttpServer())
+      .post(`/v1/notifications/${notif.id}/read`)
+      .set(attackerAuth);
     expect(attackerMarkRead.status).toBe(200); // silently affects zero rows, not an error/leak
 
-    const stillUnread = await request(app.getHttpServer()).get('/v1/notifications').set(recipientAuth);
+    const stillUnread = await request(app.getHttpServer())
+      .get('/v1/notifications')
+      .set(recipientAuth);
     expect(stillUnread.body.items.find((n: { id: string }) => n.id === notif.id).readAt).toBeNull();
 
-    const attackerList = await request(app.getHttpServer()).get('/v1/notifications').set(attackerAuth);
+    const attackerList = await request(app.getHttpServer())
+      .get('/v1/notifications')
+      .set(attackerAuth);
     expect(attackerList.body.items.some((n: { id: string }) => n.id === notif.id)).toBe(false);
 
     await prisma.wallet.delete({ where: { address } }).catch(() => undefined);
@@ -384,22 +479,46 @@ describe('Notifications (e2e) — worker-created notifications (seeded directly,
     const chain = await prisma.chain.upsert({
       where: { identifier: chainIdentifier },
       update: {},
-      create: { identifier: chainIdentifier, name: 'Base', nativeSymbol: 'ETH', rpcConfigKey: 'CHAIN_RPC_URL' },
+      create: {
+        identifier: chainIdentifier,
+        name: 'Base',
+        nativeSymbol: 'ETH',
+        rpcConfigKey: 'CHAIN_RPC_URL',
+      },
     });
     const baseToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: baseAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: baseAddress, symbol: 'WHAL', name: 'Whale Token', decimals: 18 },
+      create: {
+        chainId: chain.id,
+        contractAddress: baseAddress,
+        symbol: 'WHAL',
+        name: 'Whale Token',
+        decimals: 18,
+      },
     });
     const quoteToken = await prisma.token.upsert({
       where: { chainId_contractAddress: { chainId: chain.id, contractAddress: quoteAddress } },
       update: {},
-      create: { chainId: chain.id, contractAddress: quoteAddress, symbol: 'WHALQ', name: 'Whale Quote', decimals: 6 },
+      create: {
+        chainId: chain.id,
+        contractAddress: quoteAddress,
+        symbol: 'WHALQ',
+        name: 'Whale Quote',
+        decimals: 6,
+      },
     });
     const market = await prisma.tokenMarket.upsert({
       where: { chainId_pairAddress: { chainId: chain.id, pairAddress: poolAddress } },
       update: {},
-      create: { chainId: chain.id, tokenId: baseToken.id, quoteTokenId: quoteToken.id, dex: 'uniswap-v3', pairAddress: poolAddress, feeTier: 3000 },
+      create: {
+        chainId: chain.id,
+        tokenId: baseToken.id,
+        quoteTokenId: quoteToken.id,
+        dex: 'uniswap-v3',
+        pairAddress: poolAddress,
+        feeTier: 3000,
+      },
     });
     tokenMarketId = market.id;
 
@@ -464,7 +583,12 @@ describe('Notifications (e2e) — worker-created notifications (seeded directly,
     const auth = { Authorization: `Bearer ${session.token}` };
 
     await prisma.notification.create({
-      data: { userId: session.userId, type: 'TRENDING_TOKEN', dedupeKey: `token:${tokenMarketId}:since:now`, tokenMarketId },
+      data: {
+        userId: session.userId,
+        type: 'TRENDING_TOKEN',
+        dedupeKey: `token:${tokenMarketId}:since:now`,
+        tokenMarketId,
+      },
     });
 
     const list = await request(app.getHttpServer()).get('/v1/notifications').set(auth);
@@ -479,15 +603,24 @@ describe('Notifications (e2e) — worker-created notifications (seeded directly,
     const auth = { Authorization: `Bearer ${session.token}` };
 
     await prisma.notification.create({
-      data: { userId: session.userId, type: 'TRENDING_TOKEN', dedupeKey: `token:${tokenMarketId}:since:mark-all`, tokenMarketId },
+      data: {
+        userId: session.userId,
+        type: 'TRENDING_TOKEN',
+        dedupeKey: `token:${tokenMarketId}:since:mark-all`,
+        tokenMarketId,
+      },
     });
-    const before = await request(app.getHttpServer()).get('/v1/notifications/unread-count').set(auth);
+    const before = await request(app.getHttpServer())
+      .get('/v1/notifications/unread-count')
+      .set(auth);
     expect(before.body.count).toBeGreaterThan(0);
 
     const markAll = await request(app.getHttpServer()).post('/v1/notifications/read-all').set(auth);
     expect(markAll.status).toBe(200);
 
-    const after = await request(app.getHttpServer()).get('/v1/notifications/unread-count').set(auth);
+    const after = await request(app.getHttpServer())
+      .get('/v1/notifications/unread-count')
+      .set(auth);
     expect(after.body.count).toBe(0);
   });
 });

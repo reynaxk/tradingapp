@@ -6,8 +6,9 @@ import { SearchBar } from './SearchBar';
 /**
  * "Discover" is the one top-level nav destination — trader profiles (`/trader/[address]`)
  * are real as of Phase 2, but reached from activity/search/follows rather than a top-level
- * link, since there's no trader *listing* page to point a nav item at yet. "Trades" (Phase
- * 3) is the one exception: it's every user's own private history, worth a permanent link.
+ * link, since there's no trader *listing* page to point a nav item at yet. "Trades" (Phase 3)
+ * and "Watchlist" (Phase 6) are the exceptions: both are every user's own private state,
+ * worth a permanent link even with no public listing page behind them.
  */
 export function MarketHeader({ searchValue }: { searchValue?: string }) {
   return (
@@ -17,13 +18,24 @@ export function MarketHeader({ searchValue }: { searchValue?: string }) {
           <span aria-hidden className="text-xl">
             🔥
           </span>
-          <span className="font-display text-lg font-extrabold tracking-tight text-ink-900">Fomo</span>
+          <span className="font-display text-lg font-extrabold tracking-tight text-ink-900">
+            Fomo
+          </span>
         </Link>
         <span className="rounded-full bg-accent/10 px-2.5 py-1 font-mono text-[0.7rem] uppercase tracking-wide text-accent">
           Discover
         </span>
-        <Link href="/trades" className="font-mono text-[0.7rem] uppercase tracking-wide text-ink-400 hover:text-ink-900">
+        <Link
+          href="/trades"
+          className="font-mono text-[0.7rem] uppercase tracking-wide text-ink-400 hover:text-ink-900"
+        >
           Trades
+        </Link>
+        <Link
+          href="/watchlist"
+          className="font-mono text-[0.7rem] uppercase tracking-wide text-ink-400 hover:text-ink-900"
+        >
+          Watchlist
         </Link>
         <div className="ml-auto flex items-center gap-3">
           <SearchBar defaultValue={searchValue} />
